@@ -1,95 +1,170 @@
-# 鲸灵 DeepSeek Live2D 桌宠
+# 鲸灵桌宠
 
-独立 Windows 桌宠应用，技术栈为 Tauri v2、React、TypeScript、Rust、PixiJS 和 Live2D Web Runtime。当前版本已经升级为“桌宠 + 快捷聊天 + 本地酒馆管理器”结构。
+鲸灵桌宠是一个 Windows 桌面宠物与本地酒馆聊天管理器项目。项目基于 Tauri v2、React、TypeScript 和 Rust 构建，目标是把轻量桌宠、快捷聊天、角色卡管理、世界书、预设和多 Provider 聊天整合到一个本地桌面应用里。
 
-## 已实现
+当前项目仍处于开发阶段，提交名里的 `50%` 代表这是中途可运行版本，不是最终商业发行版。
 
-- `pet` 桌宠窗口：透明、无边框、默认置顶、跳过任务栏、可拖拽。
-- `chat` 快捷聊天窗口：角色、聊天、预设选择；DeepSeek 流式输出；停止生成；清空当前聊天。
-- `tavern` 酒馆管理窗口：角色库、Persona、聊天库、世界书、预设、Prompt 预览、Provider Key 管理。
-- 本地酒馆数据目录：`tavern_data/characters`、`personas`、`chats`、`worldbooks`、`presets`。
-- SillyTavern 角色卡导入：支持 JSON，也支持 PNG 中常见的 `chara` 文本元数据。
-- SillyTavern v2 风格角色卡 JSON 导出。
-- 世界书关键词触发、优先级排序和 Prompt 预览。
-- DeepSeek Provider：继续使用 `https://api.deepseek.com/chat/completions`，默认模型 `deepseek-v4-flash`。
-- API Key 使用 Windows Credential Manager 保存，开发期也支持 `DEEPSEEK_API_KEY` 环境变量。
-- 托盘菜单：打开快捷聊天、打开酒馆管理器、隐藏聊天窗口、退出。
-- 快捷键：`Ctrl+Alt+Space` 隐藏/显示桌宠。
+## 主要功能
 
-## 运行
+- 桌宠窗口：透明、无边框、置顶、跳过任务栏，支持鼠标拖动、滚轮缩放。
+- 快捷聊天：点击桌宠打开聊天小窗，支持角色、聊天、Persona、预设和 Provider 切换。
+- 酒馆管理器：角色库、Persona、聊天库、世界书、预设、Prompt 预览和扩展设置。
+- 多 Provider：默认 DeepSeek，预留并接入 OpenAI 兼容接口、OpenRouter、Ollama 等 OpenAI-compatible 请求流程。
+- 本地数据：角色、Persona、聊天、世界书、预设等保存到应用数据目录。
+- API Key：使用 Windows Credential Manager 保存，不明文写入项目配置。
+- TTS 语音：支持系统语音和 Piper 中文 medium 本地语音。
+- 桌面体验：托盘菜单、开机自启、窗口置顶、全局快捷键 `Ctrl+Alt+Space` 隐藏/显示桌宠。
+
+## 技术栈
+
+- 桌面壳：Tauri v2
+- 前端：React、TypeScript、Vite、Zustand
+- 后端：Rust、reqwest、keyring
+- 桌宠渲染：PixiJS、Live2D Web Runtime 预留
+- 本地 TTS：Piper + `zh_CN-huayan-medium`
+
+## 目录结构
+
+```text
+jingling-desktop-pet
+├─ src/                         React 前端
+│  ├─ components/               桌宠、聊天窗、酒馆窗口组件
+│  ├─ components/tavern/        酒馆管理器子页面
+│  ├─ lib/                      Tauri 调用、语音、头像、token 工具
+│  ├─ stores/                   前端状态
+│  └─ types/                    前后端共享类型
+├─ src-tauri/                   Rust/Tauri 后端
+│  ├─ src/                      DeepSeek、酒馆数据、设置、托盘、Piper
+│  ├─ resources/piper/          Piper 运行文件和中文模型
+│  └─ tauri.conf.json           Tauri 窗口与打包配置
+├─ public/                      静态资源和 Live2D 模型占位目录
+├─ docs/                        补充文档
+└─ scripts/                     辅助脚本
+```
+
+## 环境准备
+
+需要安装：
+
+- Node.js 和 npm
+- Rustup / Cargo
+- Visual Studio Build Tools C++ 工具链
+- Microsoft WebView2 Runtime
+
+项目依赖安装：
 
 ```powershell
 cd C:\Game\jingling-desktop-pet
 npm install
+```
+
+## 开发运行
+
+```powershell
+cd C:\Game\jingling-desktop-pet
 $env:PATH="C:\Users\LY\.cargo\bin;$env:PATH"
 npm run tauri:dev
 ```
 
-如果只运行已构建版本：
+只预览前端界面：
 
 ```powershell
-C:\Game\jingling-desktop-pet\src-tauri\target\release\jingling_desktop_pet.exe
+npm run dev
 ```
+
+浏览器预览和桌面端使用同一套 React 代码，但浏览器预览不会拥有置顶、托盘、系统凭据、全局快捷键等桌面能力。
 
 ## 构建
 
 ```powershell
 cd C:\Game\jingling-desktop-pet
 $env:PATH="C:\Users\LY\.cargo\bin;$env:PATH"
+npm run build
 npm run tauri:build
 ```
 
-构建产物：
+构建后的 exe 默认位于：
 
 ```text
 C:\Game\jingling-desktop-pet\src-tauri\target\release\jingling_desktop_pet.exe
 ```
 
-## 使用
+## 数据位置
 
-- 左键点击桌宠：打开或隐藏快捷聊天。
-- 按住桌宠拖动：移动桌宠。
-- 右键点击桌宠：打开酒馆管理器。
-- 快捷聊天顶部：切换角色、聊天和预设。
-- 酒馆管理器：
-  - 角色页编辑角色卡，导入/导出 SillyTavern 风格角色卡。
-  - Persona 页设置用户身份。
-  - 聊天库页搜索、查看、书签、导入/导出聊天。
-  - 世界书页编辑关键词触发条目，并可测试触发结果。
-  - 预设页设置 system prompt、作者注释、上下文预算、最大输出和温度。
-  - Prompt 页预览最终发给模型的消息结构。
-  - 扩展页保存 Provider Key，并预留正则、快捷回复、TTS、翻译、图片描述和向量记忆开关。
-
-## Live2D 模型替换
-
-将 Cubism 导出的文件放到：
+酒馆数据保存在应用数据目录，例如：
 
 ```text
-C:\Game\jingling-desktop-pet\public\models\jingling
+C:\Users\LY\AppData\Roaming\com.ly.jingling.pet\tavern_data
 ```
 
-需要包含：
+常见子目录：
 
 ```text
-jingling.model3.json
-live2dcubismcore.min.js
-textures\
-motions\
-expressions\
+characters/
+personas/
+chats/
+worldbooks/
+presets/
+settings.json
 ```
 
-然后把：
+API Key 保存在 Windows Credential Manager，不保存在 Git 仓库里。
+
+## Piper 语音
+
+Piper 中文语音文件位于：
 
 ```text
-C:\Game\jingling-desktop-pet\public\models\jingling\model-state.json
+src-tauri\resources\piper
 ```
 
-里的 `enabled` 改成 `true`。
+当前只保留中文 medium 模型和必要运行依赖：
+
+```text
+src-tauri\resources\piper\voices\zh_CN-huayan-medium.onnx
+src-tauri\resources\piper\voices\zh_CN-huayan-medium.onnx.json
+```
+
+设置里选择 `Piper 中文 medium` 后，可以用 `检测` 和 `试听` 验证是否可用。
+
+## 常用操作
+
+- 左键点击桌宠：显示或隐藏快捷聊天。
+- 右键点击桌宠：显示或隐藏酒馆管理器。
+- 鼠标滚轮：缩放桌宠。
+- `Ctrl+Alt+Space`：隐藏或显示桌宠。
+- 酒馆扩展页：保存 Provider API Key。
+- 聊天设置区：切换角色、会话、Persona、预设和 Provider。
+
+## Git 说明
+
+本仓库只提交源码和必要资源，不提交依赖和构建产物。
+
+已忽略的常见目录包括：
+
+```text
+node_modules
+dist
+src-tauri/target
+src-tauri/target-qa
+output
+*.log
+```
+
+如果重新拉取项目，需要运行：
+
+```powershell
+npm install
+npm run tauri:build
+```
 
 ## 验收命令
 
 ```powershell
 npm run build
 & C:\Users\LY\.cargo\bin\cargo.exe check
-$env:PATH="C:\Users\LY\.cargo\bin;$env:PATH"; npm run tauri:build
 ```
+
+## 当前状态
+
+这是“鲸灵第一次提交-50%”附近的开发版本。基础桌宠、快捷聊天、酒馆管理器、DeepSeek/Provider 接入、本地数据、Piper 中文语音已经具备雏形；后续还可以继续完善 Live2D 正式模型、长期记忆、TTS 体验、导入导出细节、安装包和商业化设置。
