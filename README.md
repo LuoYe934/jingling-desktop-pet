@@ -56,15 +56,15 @@ jingling-desktop-pet
 项目依赖安装：
 
 ```powershell
-cd C:\Game\jingling-desktop-pet
+cd jingling-desktop-pet
 npm install
 ```
 
 ## 开发运行
 
 ```powershell
-cd C:\Game\jingling-desktop-pet
-$env:PATH="C:\Users\LY\.cargo\bin;$env:PATH"
+cd jingling-desktop-pet
+$env:PATH="$env:USERPROFILE\.cargo\bin;$env:PATH"
 npm run tauri:dev
 ```
 
@@ -79,24 +79,24 @@ npm run dev
 ## 构建
 
 ```powershell
-cd C:\Game\jingling-desktop-pet
-$env:PATH="C:\Users\LY\.cargo\bin;$env:PATH"
+cd jingling-desktop-pet
+$env:PATH="$env:USERPROFILE\.cargo\bin;$env:PATH"
 npm run build
 npm run tauri:build
 ```
 
-构建后的 exe 默认位于：
+构建后的 exe 默认位于项目目录内：
 
 ```text
-C:\Game\jingling-desktop-pet\src-tauri\target\release\jingling_desktop_pet.exe
+src-tauri\target\release\jingling_desktop_pet.exe
 ```
 
 ## 数据位置
 
-酒馆数据保存在应用数据目录，例如：
+酒馆数据保存在系统应用数据目录，例如：
 
 ```text
-C:\Users\LY\AppData\Roaming\com.ly.jingling.pet\tavern_data
+%APPDATA%\com.ly.jingling.pet\tavern_data
 ```
 
 常见子目录：
@@ -164,7 +164,7 @@ npm run tauri:build
 
 ```powershell
 npm run build
-& C:\Users\LY\.cargo\bin\cargo.exe check
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
 ## 当前状态

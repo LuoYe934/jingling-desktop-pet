@@ -56,15 +56,15 @@ Install the following tools before development:
 Install project dependencies:
 
 ```powershell
-cd C:\Game\jingling-desktop-pet
+cd jingling-desktop-pet
 npm install
 ```
 
 ## Development
 
 ```powershell
-cd C:\Game\jingling-desktop-pet
-$env:PATH="C:\Users\LY\.cargo\bin;$env:PATH"
+cd jingling-desktop-pet
+$env:PATH="$env:USERPROFILE\.cargo\bin;$env:PATH"
 npm run tauri:dev
 ```
 
@@ -79,24 +79,24 @@ The browser preview and desktop app share the same React codebase, but the brows
 ## Build
 
 ```powershell
-cd C:\Game\jingling-desktop-pet
-$env:PATH="C:\Users\LY\.cargo\bin;$env:PATH"
+cd jingling-desktop-pet
+$env:PATH="$env:USERPROFILE\.cargo\bin;$env:PATH"
 npm run build
 npm run tauri:build
 ```
 
-The default executable path after a release build is:
+The default executable path after a release build is inside the project directory:
 
 ```text
-C:\Game\jingling-desktop-pet\src-tauri\target\release\jingling_desktop_pet.exe
+src-tauri\target\release\jingling_desktop_pet.exe
 ```
 
 ## Data Location
 
-Tavern data is stored in the application data directory, for example:
+Tavern data is stored in the system application data directory, for example:
 
 ```text
-C:\Users\LY\AppData\Roaming\com.ly.jingling.pet\tavern_data
+%APPDATA%\com.ly.jingling.pet\tavern_data
 ```
 
 Common subdirectories:
@@ -164,7 +164,7 @@ npm run tauri:build
 
 ```powershell
 npm run build
-& C:\Users\LY\.cargo\bin\cargo.exe check
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
 ## Current Status
