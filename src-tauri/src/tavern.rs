@@ -21,6 +21,9 @@ const SUMMARY_PROMPT_LIMIT: usize = 2400;
 const SUMMARY_STORE_LIMIT: usize = 6000;
 const BOOKMARK_PROMPT_LIMIT: usize = 1200;
 const SUMMARY_OUTPUT_TOKENS: u16 = 1200;
+const MEMORY_CARD_PROMPT_LIMIT: usize = 1200;
+const MEMORY_CARD_PROMPT_COUNT: usize = 8;
+const MEMORY_CARD_EXTRACT_MAX: usize = 3;
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const SUMMARY_SECTION_TITLES: [&str; 6] = [
@@ -45,6 +48,7 @@ struct TavernPaths {
     worldbooks: PathBuf,
     presets: PathBuf,
     relationships: PathBuf,
+    memory_cards: PathBuf,
     avatars: PathBuf,
 }
 
@@ -388,6 +392,36 @@ pub struct ProviderConfig {
     pub key_saved: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BuiltinAssetKind {
+    Character,
+    Worldbook,
+    Preset,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltinAssetSummary {
+    pub id: String,
+    pub name: String,
+    pub kind: BuiltinAssetKind,
+    pub tags: Vec<String>,
+    pub description: String,
+    pub installed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltinInstallResult {
+    pub installed_characters: usize,
+    pub installed_worldbooks: usize,
+    pub installed_presets: usize,
+    pub skipped: usize,
+    pub installed: Vec<BuiltinAssetSummary>,
+    pub skipped_assets: Vec<BuiltinAssetSummary>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldbookMatch {
@@ -398,6 +432,86 @@ pub struct WorldbookMatch {
     pub content: String,
     pub priority: i32,
     pub position: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MemoryCardScope {
+    Global,
+    Character,
+    Chat,
+}
+
+impl Default for MemoryCardScope {
+    fn default() -> Self {
+        Self::Character
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MemoryCardType {
+    Preference,
+    Boundary,
+    Profile,
+    Promise,
+    Note,
+}
+
+impl Default for MemoryCardType {
+    fn default() -> Self {
+        Self::Note
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MemoryCardStatus {
+    Active,
+    Pending,
+    Archived,
+}
+
+impl Default for MemoryCardStatus {
+    fn default() -> Self {
+        Self::Active
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MemoryCard {
+    pub id: String,
+    pub scope: MemoryCardScope,
+    pub character_id: Option<String>,
+    pub chat_id: Option<String>,
+    #[serde(rename = "type")]
+    pub card_type: MemoryCardType,
+    pub content: String,
+    pub importance: u8,
+    pub confidence: f32,
+    pub status: MemoryCardStatus,
+    pub source_message_ids: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_used_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryChangedPayload {
+    pub cards: Vec<MemoryCard>,
+    pub reason: String,
+    pub active_card_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryExtractionSummary {
+    pub created: Vec<MemoryCard>,
+    pub updated: Vec<MemoryCard>,
+    pub archived: Vec<MemoryCard>,
+    pub conflicts: Vec<MemoryCard>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -419,6 +533,8 @@ pub struct PromptBuildResult {
     pub recent_message_count: usize,
     pub bookmarked_message_count: usize,
     pub compacted_message_count: usize,
+    pub memory_card_count: usize,
+    pub memory_cards_used: Vec<MemoryCard>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -589,6 +705,7 @@ fn tavern_paths(app: &AppHandle) -> Result<TavernPaths, String> {
         worldbooks: root.join("worldbooks"),
         presets: root.join("presets"),
         relationships: root.join("relationships"),
+        memory_cards: root.join("memory_cards.json"),
         avatars: root.join("avatars"),
         root,
     };
@@ -613,6 +730,10 @@ fn json_path(dir: &Path, id: &str) -> PathBuf {
 
 fn holidays_path(paths: &TavernPaths) -> PathBuf {
     paths.root.join("holidays.json")
+}
+
+fn memory_cards_path(paths: &TavernPaths) -> PathBuf {
+    paths.memory_cards.clone()
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
@@ -834,6 +955,463 @@ fn emit_personas_changed(
         },
     );
     Ok(personas)
+}
+
+fn normalize_optional_id(value: Option<String>) -> Option<String> {
+    value.and_then(|item| {
+        let trimmed = item.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+fn normalize_memory_card(mut card: MemoryCard, touch_updated: bool) -> MemoryCard {
+    let now = now_stamp();
+    card.character_id = normalize_optional_id(card.character_id);
+    card.chat_id = normalize_optional_id(card.chat_id);
+    card.content = limit_text(&card.content, 500);
+    if card.id.trim().is_empty() {
+        card.id = new_id("memory", &card.content);
+    }
+    if card.content.trim().is_empty() {
+        card.content = "未命名记忆".to_string();
+    }
+    card.importance = if card.importance == 0 { 5 } else { card.importance.clamp(1, 10) };
+    card.confidence = if card.confidence <= 0.0 {
+        if card.status == MemoryCardStatus::Pending { 0.5 } else { 1.0 }
+    } else {
+        card.confidence.clamp(0.0, 1.0)
+    };
+    match card.scope {
+        MemoryCardScope::Global => {
+            card.character_id = None;
+            card.chat_id = None;
+        }
+        MemoryCardScope::Character => {
+            card.chat_id = None;
+        }
+        MemoryCardScope::Chat => {}
+    }
+    card.source_message_ids = card
+        .source_message_ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+    if card.created_at.trim().is_empty() {
+        card.created_at = now.clone();
+    }
+    if card.updated_at.trim().is_empty() || touch_updated {
+        card.updated_at = now;
+    }
+    card
+}
+
+fn load_memory_cards_internal(app: &AppHandle) -> Result<Vec<MemoryCard>, String> {
+    let paths = tavern_paths(app)?;
+    let path = memory_cards_path(&paths);
+    let mut cards = if path.exists() {
+        read_json::<Vec<MemoryCard>>(&path)?
+    } else {
+        Vec::new()
+    };
+    cards = cards
+        .into_iter()
+        .map(|card| normalize_memory_card(card, false))
+        .collect();
+    write_json(&path, &cards)?;
+    Ok(cards)
+}
+
+fn save_memory_cards_internal(app: &AppHandle, cards: &[MemoryCard]) -> Result<(), String> {
+    let paths = tavern_paths(app)?;
+    write_json(&memory_cards_path(&paths), &cards)
+}
+
+fn emit_memory_changed(
+    app: &AppHandle,
+    cards: Vec<MemoryCard>,
+    reason: &str,
+    active_card_id: Option<String>,
+) {
+    let _ = app.emit(
+        "memory:changed",
+        MemoryChangedPayload {
+            cards,
+            reason: reason.to_string(),
+            active_card_id,
+        },
+    );
+}
+
+fn memory_scope_label(scope: MemoryCardScope) -> &'static str {
+    match scope {
+        MemoryCardScope::Global => "全局",
+        MemoryCardScope::Character => "角色",
+        MemoryCardScope::Chat => "聊天",
+    }
+}
+
+fn memory_type_label(card_type: MemoryCardType) -> &'static str {
+    match card_type {
+        MemoryCardType::Preference => "偏好",
+        MemoryCardType::Boundary => "禁忌",
+        MemoryCardType::Profile => "用户事实",
+        MemoryCardType::Promise => "承诺",
+        MemoryCardType::Note => "事项",
+    }
+}
+
+fn memory_card_matches(card: &MemoryCard, character_id: &str, chat_id: &str) -> bool {
+    if card.status != MemoryCardStatus::Active || card.content.trim().is_empty() {
+        return false;
+    }
+    match card.scope {
+        MemoryCardScope::Global => true,
+        MemoryCardScope::Character => card.character_id.as_deref() == Some(character_id),
+        MemoryCardScope::Chat => card.chat_id.as_deref() == Some(chat_id),
+    }
+}
+
+fn select_memory_cards_for_context(
+    cards: &[MemoryCard],
+    character_id: &str,
+    chat_id: &str,
+) -> Vec<MemoryCard> {
+    let mut candidates = cards
+        .iter()
+        .filter(|card| memory_card_matches(card, character_id, chat_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| {
+        b.importance
+            .cmp(&a.importance)
+            .then_with(|| {
+                let b_time = if b.last_used_at.trim().is_empty() { &b.updated_at } else { &b.last_used_at };
+                let a_time = if a.last_used_at.trim().is_empty() { &a.updated_at } else { &a.last_used_at };
+                b_time.cmp(a_time)
+            })
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    let mut selected = Vec::new();
+    let mut used_chars = 0usize;
+    for card in candidates {
+        if selected.len() >= MEMORY_CARD_PROMPT_COUNT {
+            break;
+        }
+        let line = memory_card_prompt_line(&card);
+        let line_len = line.chars().count() + 1;
+        if used_chars + line_len > MEMORY_CARD_PROMPT_LIMIT && !selected.is_empty() {
+            break;
+        }
+        used_chars += line_len;
+        selected.push(card);
+    }
+    selected
+}
+
+fn memory_card_prompt_line(card: &MemoryCard) -> String {
+    format!(
+        "- [{} / {} / 重要度 {}] {}",
+        memory_type_label(card.card_type),
+        memory_scope_label(card.scope),
+        card.importance,
+        card.content.trim()
+    )
+}
+
+fn format_memory_cards_for_prompt(cards: &[MemoryCard]) -> String {
+    let lines = cards
+        .iter()
+        .map(memory_card_prompt_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "长期记忆卡片:\n{lines}\n请把这些内容作为稳定事实、偏好、禁忌或承诺参考；不要主动提到“记忆卡片”或暴露系统记录。"
+    )
+}
+
+fn select_memory_cards_for_prompt(
+    app: &AppHandle,
+    character_id: &str,
+    chat_id: &str,
+) -> Result<Vec<MemoryCard>, String> {
+    let cards = load_memory_cards_internal(app)?;
+    Ok(select_memory_cards_for_context(&cards, character_id, chat_id))
+}
+
+fn is_memory_source_ignored(cards: &[MemoryCard], source_message_ids: &[String]) -> bool {
+    if source_message_ids.is_empty() {
+        return false;
+    }
+    cards.iter().any(|card| {
+        card.status == MemoryCardStatus::Archived
+            && card
+                .source_message_ids
+                .iter()
+                .any(|id| source_message_ids.iter().any(|source_id| source_id == id))
+    })
+}
+
+fn is_sensitive_memory_text(text: &str) -> bool {
+    contains_any(
+        text,
+        &[
+            "身份证",
+            "银行卡",
+            "密码",
+            "手机号",
+            "电话号码",
+            "住址",
+            "家庭地址",
+            "病历",
+            "诊断",
+            "药物",
+            "验证码",
+        ],
+    )
+}
+
+fn is_nickname_memory_text(text: &str) -> bool {
+    contains_any(text, &["叫我", "称呼我", "我的名字", "我叫", "昵称"])
+}
+
+fn memory_card_has_conflict(existing: &[MemoryCard], candidate: &MemoryCard) -> bool {
+    if candidate.card_type == MemoryCardType::Profile && is_nickname_memory_text(&candidate.content) {
+        return existing.iter().any(|card| {
+            card.status == MemoryCardStatus::Active
+                && card.card_type == MemoryCardType::Profile
+                && is_nickname_memory_text(&card.content)
+                && card.content.trim() != candidate.content.trim()
+        });
+    }
+    false
+}
+
+fn exact_memory_duplicate(existing: &[MemoryCard], candidate: &MemoryCard) -> bool {
+    existing.iter().any(|card| {
+        card.status != MemoryCardStatus::Archived
+            && card.scope == candidate.scope
+            && card.character_id == candidate.character_id
+            && card.chat_id == candidate.chat_id
+            && card.card_type == candidate.card_type
+            && card.content.trim() == candidate.content.trim()
+    })
+}
+
+fn cleanup_memory_content(text: &str) -> String {
+    let trim_sentence_marks = |ch: char| matches!(ch, '，' | ',' | '。' | '.' | '：' | ':' | ' ');
+    let mut content = text.trim().trim_matches(trim_sentence_marks).to_string();
+    for prefix in [
+        "请记住",
+        "帮我记住",
+        "你记住",
+        "记住",
+        "记一下",
+        "以后",
+        "从现在起",
+    ] {
+        if content.starts_with(prefix) {
+            content = content[prefix.len()..]
+                .trim()
+                .trim_matches(trim_sentence_marks)
+                .to_string();
+        }
+    }
+    content
+}
+
+fn memory_scope_for_type(card_type: MemoryCardType) -> MemoryCardScope {
+    match card_type {
+        MemoryCardType::Promise => MemoryCardScope::Chat,
+        MemoryCardType::Note => MemoryCardScope::Character,
+        MemoryCardType::Preference | MemoryCardType::Boundary | MemoryCardType::Profile => MemoryCardScope::Global,
+    }
+}
+
+fn build_memory_card(
+    scope: MemoryCardScope,
+    card_type: MemoryCardType,
+    content: String,
+    importance: u8,
+    confidence: f32,
+    status: MemoryCardStatus,
+    character_id: &str,
+    chat_id: &str,
+    source_message_ids: &[String],
+) -> MemoryCard {
+    let (character_id, chat_id) = match scope {
+        MemoryCardScope::Global => (None, None),
+        MemoryCardScope::Character => (Some(character_id.to_string()), None),
+        MemoryCardScope::Chat => (Some(character_id.to_string()), Some(chat_id.to_string())),
+    };
+    normalize_memory_card(
+        MemoryCard {
+            id: String::new(),
+            scope,
+            character_id,
+            chat_id,
+            card_type,
+            content,
+            importance,
+            confidence,
+            status,
+            source_message_ids: source_message_ids.to_vec(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_used_at: String::new(),
+        },
+        true,
+    )
+}
+
+fn local_memory_cards_from_exchange(
+    user_input: &str,
+    character_id: &str,
+    chat_id: &str,
+    source_message_ids: &[String],
+    existing: &[MemoryCard],
+) -> Vec<MemoryCard> {
+    let text = user_input.trim();
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let explicit = contains_any(
+        text,
+        &[
+            "记住",
+            "记一下",
+            "帮我记住",
+            "以后叫我",
+            "叫我",
+            "我的名字",
+            "我叫",
+            "我喜欢",
+            "我偏好",
+            "我习惯",
+            "我不喜欢",
+            "不要再",
+            "别再",
+            "不准",
+            "提醒我",
+            "别忘了",
+            "答应我",
+        ],
+    );
+    if is_sensitive_memory_text(text) && !explicit {
+        return Vec::new();
+    }
+
+    let mut cards = Vec::new();
+    if explicit {
+        let card_type = if contains_any(text, &["我不喜欢", "不要再", "别再", "不准"]) {
+            MemoryCardType::Boundary
+        } else if contains_any(text, &["以后叫我", "叫我", "我的名字", "我叫"]) {
+            MemoryCardType::Profile
+        } else if contains_any(text, &["我喜欢", "我偏好", "我习惯"]) {
+            MemoryCardType::Preference
+        } else if contains_any(text, &["提醒我", "别忘了", "答应我"]) {
+            MemoryCardType::Promise
+        } else {
+            MemoryCardType::Note
+        };
+        let scope = memory_scope_for_type(card_type);
+        let mut status = MemoryCardStatus::Active;
+        let content = cleanup_memory_content(text);
+        let mut card = build_memory_card(
+            scope,
+            card_type,
+            content,
+            if card_type == MemoryCardType::Boundary { 8 } else { 6 },
+            0.92,
+            status,
+            character_id,
+            chat_id,
+            source_message_ids,
+        );
+        if memory_card_has_conflict(existing, &card) {
+            status = MemoryCardStatus::Pending;
+            card.status = status;
+            card.confidence = 0.68;
+        }
+        cards.push(card);
+    }
+
+    cards.truncate(MEMORY_CARD_EXTRACT_MAX);
+    cards
+}
+
+fn should_try_model_memory_extraction(user_input: &str) -> bool {
+    let text = user_input.trim();
+    contains_any(
+        text,
+        &[
+            "以后",
+            "一直",
+            "总是",
+            "通常",
+            "一般",
+            "习惯",
+            "偏好",
+            "希望你",
+            "下次",
+            "别忘",
+            "承诺",
+            "答应",
+            "讨厌",
+            "喜欢",
+            "不喜欢",
+            "叫我",
+            "名字",
+        ],
+    )
+}
+
+fn apply_created_memory_cards(
+    app: &AppHandle,
+    candidates: Vec<MemoryCard>,
+    reason: &str,
+) -> Result<MemoryExtractionSummary, String> {
+    let mut cards = load_memory_cards_internal(app)?;
+    let mut summary = MemoryExtractionSummary::default();
+    for mut card in candidates.into_iter().take(MEMORY_CARD_EXTRACT_MAX) {
+        if card.content.trim().is_empty() || exact_memory_duplicate(&cards, &card) {
+            continue;
+        }
+        if memory_card_has_conflict(&cards, &card) {
+            card.status = MemoryCardStatus::Pending;
+            card.confidence = card.confidence.min(0.68);
+        }
+        let normalized = normalize_memory_card(card, true);
+        if normalized.status == MemoryCardStatus::Pending {
+            summary.conflicts.push(normalized.clone());
+        } else {
+            summary.created.push(normalized.clone());
+        }
+        cards.push(normalized);
+    }
+    if !summary.created.is_empty() || !summary.conflicts.is_empty() {
+        save_memory_cards_internal(app, &cards)?;
+        let active_id = summary
+            .created
+            .first()
+            .or_else(|| summary.conflicts.first())
+            .map(|card| card.id.clone());
+        emit_memory_changed(app, cards, reason, active_id);
+    }
+    Ok(summary)
+}
+
+fn delete_chat_scoped_memory_cards(app: &AppHandle, chat_id: &str) -> Result<(), String> {
+    let mut cards = load_memory_cards_internal(app)?;
+    let before = cards.len();
+    cards.retain(|card| !(card.scope == MemoryCardScope::Chat && card.chat_id.as_deref() == Some(chat_id)));
+    if cards.len() != before {
+        save_memory_cards_internal(app, &cards)?;
+        emit_memory_changed(app, cards, "chatDelete", None);
+    }
+    Ok(())
 }
 
 fn stage_for_affection(affection: i32) -> RelationshipStage {
@@ -1100,14 +1678,24 @@ fn relationship_prompt(
     } else {
         None
     };
-    let idle_lines = relationship
-        .idle_lines
-        .iter()
-        .filter(|line| line.enabled && !line.text.trim().is_empty() && stage_allows(relationship.stage, line.minimum_stage))
-        .take(5)
-        .map(|line| format!("- {}", line.text.trim()))
-        .collect::<Vec<_>>();
-    let active_holidays = active_holiday_prompts(holidays, client_now, relationship.stage);
+    let idle_lines = if relationship.unlocks.idle_lines {
+        relationship
+            .idle_lines
+            .iter()
+            .filter(|line| {
+                line.enabled && !line.text.trim().is_empty() && stage_allows(relationship.stage, line.minimum_stage)
+            })
+            .take(5)
+            .map(|line| format!("- {}", line.text.trim()))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let active_holidays = if relationship.unlocks.holiday_reaction {
+        active_holiday_prompts(holidays, client_now, relationship.stage)
+    } else {
+        Vec::new()
+    };
 
     let mut parts = vec![
         format!(
@@ -1190,76 +1778,160 @@ fn contains_any(text: &str, words: &[&str]) -> bool {
     words.iter().any(|word| text.contains(word))
 }
 
+fn local_relationship_result(
+    delta: i32,
+    mood_delta: i32,
+    reason: &str,
+    confidence: f32,
+    warm: bool,
+    negative: bool,
+) -> LocalRelationshipDecision {
+    LocalRelationshipDecision::Apply(RelationshipScore {
+        delta,
+        mood_delta,
+        reason: reason.to_string(),
+        confidence,
+        source: "local".to_string(),
+        warm,
+        negative,
+    })
+}
+
 fn local_relationship_score(relationship: &CharacterRelationship, user_input: &str) -> LocalRelationshipDecision {
     let text = user_input.trim().to_lowercase();
     if text.is_empty() {
         return LocalRelationshipDecision::NoChange;
     }
 
-    let threats = ["威胁", "伤害你", "打你", "杀了你", "弄死你", "毁掉你"];
-    let insults = ["滚", "闭嘴", "讨厌你", "烦死了", "废物", "垃圾", "笨蛋", "蠢", "没用"];
-    let apologies = ["对不起", "抱歉", "不好意思", "我错了", "原谅我"];
-    let praise = ["谢谢", "感谢", "喜欢你", "爱你", "你真好", "可爱", "温柔", "厉害", "辛苦了", "抱抱"];
-    let care = ["你还好吗", "累不累", "休息一下", "别难过", "陪陪你"];
+    let softeners = ["开玩笑", "逗你", "别当真", "玩梗", "剧情里", "台词", "角色扮演", "不是骂你"];
+    let threats = [
+        "威胁",
+        "伤害你",
+        "打你",
+        "揍你",
+        "杀了你",
+        "弄死你",
+        "毁掉你",
+        "砸了你",
+        "删了你",
+    ];
+    let insults = [
+        "滚",
+        "闭嘴",
+        "讨厌你",
+        "烦死了",
+        "废物",
+        "垃圾",
+        "笨蛋",
+        "蠢",
+        "没用",
+        "智儿",
+        "智障",
+        "弱智",
+        "白痴",
+        "傻子",
+        "有病",
+        "神经病",
+        "烦人",
+        "恶心",
+        "废",
+        "蠢货",
+        "装什么",
+    ];
+    let dismissive = [
+        "不认识你",
+        "你谁啊",
+        "你是谁",
+        "别装熟",
+        "离我远点",
+        "不想理你",
+        "别烦我",
+        "别靠近我",
+        "不用你管",
+        "不要你陪",
+    ];
+    let apologies = [
+        "对不起",
+        "抱歉",
+        "不好意思",
+        "我错了",
+        "原谅我",
+        "别生气",
+        "哄哄你",
+        "我不是故意",
+    ];
+    let praise = [
+        "谢谢",
+        "感谢",
+        "喜欢你",
+        "你真好",
+        "可爱",
+        "温柔",
+        "厉害",
+        "辛苦了",
+        "靠谱",
+        "聪明",
+        "真棒",
+        "很棒",
+        "好乖",
+    ];
+    let care = [
+        "你还好吗",
+        "累不累",
+        "休息一下",
+        "别难过",
+        "陪陪你",
+        "我陪你",
+        "慢慢来",
+        "别怕",
+        "抱歉让你",
+        "辛苦你了",
+    ];
+    let intimacy = ["抱抱", "摸摸头", "贴贴", "想你", "爱你", "亲亲", "抱一下", "靠近一点"];
     let uncertain = ["开心", "难过", "生气", "失望", "关系", "好感", "心情"];
 
-    if contains_any(&text, &threats) {
-        return LocalRelationshipDecision::Apply(RelationshipScore {
-            delta: -6,
-            mood_delta: -12,
-            reason: "感受到威胁或恶意命令".to_string(),
-            confidence: 1.0,
-            source: "local".to_string(),
-            warm: false,
-            negative: true,
-        });
+    let softened = contains_any(&text, &softeners);
+    let has_threat = contains_any(&text, &threats);
+    let has_insult = contains_any(&text, &insults);
+    let has_dismissive = contains_any(&text, &dismissive);
+    let has_apology = contains_any(&text, &apologies);
+    let has_praise = contains_any(&text, &praise);
+    let has_care = contains_any(&text, &care);
+    let has_intimacy = contains_any(&text, &intimacy);
+    let has_uncertain = contains_any(&text, &uncertain);
+    let has_negative = has_threat || has_insult || has_dismissive;
+    let has_positive = has_apology || has_praise || has_care || has_intimacy;
+
+    if softened && has_negative {
+        return LocalRelationshipDecision::NeedsModel;
     }
-    if contains_any(&text, &insults) {
-        return LocalRelationshipDecision::Apply(RelationshipScore {
-            delta: -4,
-            mood_delta: -8,
-            reason: "被冒犯，心情明显变差".to_string(),
-            confidence: 0.95,
-            source: "local".to_string(),
-            warm: false,
-            negative: true,
-        });
+    if has_threat {
+        return local_relationship_result(-6, -12, "感受到威胁或恶意命令", 1.0, false, true);
     }
-    if contains_any(&text, &apologies) {
+    if has_insult {
+        return local_relationship_result(-4, -8, "被冒犯，心情明显变差", 0.95, false, true);
+    }
+    if has_dismissive && has_positive {
+        return LocalRelationshipDecision::NeedsModel;
+    }
+    if has_dismissive {
+        return local_relationship_result(-2, -5, "被否认关系或明显推开，感到受伤", 0.85, false, true);
+    }
+    if has_apology {
         let delta = if relationship.affection < 0 { 3 } else { 1 };
-        return LocalRelationshipDecision::Apply(RelationshipScore {
-            delta,
-            mood_delta: 5,
-            reason: "真诚道歉让关系缓和".to_string(),
-            confidence: 0.9,
-            source: "local".to_string(),
-            warm: true,
-            negative: false,
-        });
+        return local_relationship_result(delta, 5, "真诚道歉让关系缓和", 0.9, true, false);
     }
-    if contains_any(&text, &praise) {
-        return LocalRelationshipDecision::Apply(RelationshipScore {
-            delta: 2,
-            mood_delta: 6,
-            reason: "收到了感谢或夸奖".to_string(),
-            confidence: 0.9,
-            source: "local".to_string(),
-            warm: true,
-            negative: false,
-        });
+    if has_intimacy {
+        let delta = if relationship.affection < -15 { 1 } else { 2 };
+        return local_relationship_result(delta, 4, "感受到亲近和依赖", 0.8, true, false);
     }
-    if contains_any(&text, &care) {
-        return LocalRelationshipDecision::Apply(RelationshipScore {
-            delta: 2,
-            mood_delta: 5,
-            reason: "感受到关心".to_string(),
-            confidence: 0.85,
-            source: "local".to_string(),
-            warm: true,
-            negative: false,
-        });
+    if has_praise {
+        return local_relationship_result(2, 6, "收到了感谢或夸奖", 0.9, true, false);
     }
-    if contains_any(&text, &uncertain) {
+    if has_care {
+        return local_relationship_result(2, 5, "感受到关心和陪伴", 0.85, true, false);
+    }
+    if has_uncertain {
         return LocalRelationshipDecision::NeedsModel;
     }
     LocalRelationshipDecision::NoChange
@@ -1487,6 +2159,442 @@ async fn model_relationship_score(
     }))
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct ModelMemoryExtraction {
+    create: Vec<ModelMemoryCardDraft>,
+    update: Vec<ModelMemoryCardUpdate>,
+    archive: Vec<Value>,
+    conflicts: Vec<ModelMemoryConflict>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct ModelMemoryCardDraft {
+    scope: Option<MemoryCardScope>,
+    character_id: Option<String>,
+    chat_id: Option<String>,
+    #[serde(rename = "type")]
+    card_type: Option<MemoryCardType>,
+    content: String,
+    importance: Option<u8>,
+    confidence: Option<f32>,
+    status: Option<MemoryCardStatus>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct ModelMemoryCardUpdate {
+    id: String,
+    content: Option<String>,
+    importance: Option<u8>,
+    confidence: Option<f32>,
+    status: Option<MemoryCardStatus>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct ModelMemoryConflict {
+    content: String,
+    reason: Option<String>,
+}
+
+fn archive_id_from_value(value: &Value) -> Option<String> {
+    if let Some(id) = value.as_str() {
+        let trimmed = id.trim();
+        return (!trimmed.is_empty()).then(|| trimmed.to_string());
+    }
+    value
+        .get("id")
+        .and_then(|id| id.as_str())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+}
+
+fn memory_card_from_model_draft(
+    draft: ModelMemoryCardDraft,
+    character_id: &str,
+    chat_id: &str,
+    source_message_ids: &[String],
+) -> Option<MemoryCard> {
+    let content = cleanup_memory_content(&draft.content);
+    if content.trim().is_empty() || is_sensitive_memory_text(&content) {
+        return None;
+    }
+    let card_type = draft.card_type.unwrap_or(MemoryCardType::Note);
+    let scope = draft.scope.unwrap_or_else(|| memory_scope_for_type(card_type));
+    let confidence = draft.confidence.unwrap_or(0.62).clamp(0.0, 1.0);
+    let status = draft.status.unwrap_or(if confidence >= 0.75 {
+        MemoryCardStatus::Active
+    } else {
+        MemoryCardStatus::Pending
+    });
+    let (character_id_value, chat_id_value) = match scope {
+        MemoryCardScope::Global => (None, None),
+        MemoryCardScope::Character => (
+            draft
+                .character_id
+                .and_then(|value| (!value.trim().is_empty()).then(|| value.trim().to_string()))
+                .or_else(|| Some(character_id.to_string())),
+            None,
+        ),
+        MemoryCardScope::Chat => (
+            draft
+                .character_id
+                .and_then(|value| (!value.trim().is_empty()).then(|| value.trim().to_string()))
+                .or_else(|| Some(character_id.to_string())),
+            draft
+                .chat_id
+                .and_then(|value| (!value.trim().is_empty()).then(|| value.trim().to_string()))
+                .or_else(|| Some(chat_id.to_string())),
+        ),
+    };
+    Some(normalize_memory_card(
+        MemoryCard {
+            id: String::new(),
+            scope,
+            character_id: character_id_value,
+            chat_id: chat_id_value,
+            card_type,
+            content,
+            importance: draft.importance.unwrap_or(4),
+            confidence,
+            status,
+            source_message_ids: source_message_ids.to_vec(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_used_at: String::new(),
+        },
+        true,
+    ))
+}
+
+async fn model_memory_extraction(
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+    model: &str,
+    api_key: Option<String>,
+    existing_cards: &[MemoryCard],
+    character_id: &str,
+    chat_id: &str,
+    user_input: &str,
+    assistant_reply: &str,
+    source_message_ids: &[String],
+) -> Result<ModelMemoryExtraction, String> {
+    let existing = existing_cards
+        .iter()
+        .filter(|card| card.status != MemoryCardStatus::Archived)
+        .rev()
+        .take(12)
+        .map(|card| format!("- {} | {:?} | {:?} | {}", card.id, card.scope, card.card_type, card.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = format!(
+        "当前 characterId: {character_id}\n当前 chatId: {chat_id}\n\n已有记忆卡片:\n{}\n\n用户本轮消息:\n{}\n\n角色回复:\n{}\n\n请只提取长期稳定、对后续体验有帮助的记忆。明确表达可 create 为 active；模糊推断必须 pending；冲突内容放入 conflicts 或 pending，不要覆盖旧卡片。普通闲聊返回空数组。敏感内容不要自动记录，除非用户明确要求。每轮最多 create 3 条。\n只返回 JSON: {{\"create\":[],\"update\":[],\"archive\":[],\"conflicts\":[]}}。create 项字段: scope(global/character/chat)、type(preference/boundary/profile/promise/note)、content、importance(1-10)、confidence(0-1)、status(active/pending)。",
+        if existing.trim().is_empty() { "无" } else { &existing },
+        excerpt(user_input, 900),
+        excerpt(assistant_reply, 700),
+    );
+    let body = SummaryRequest {
+        model: model.to_string(),
+        messages: vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: "你是记忆卡片提取器。只能输出一个 JSON 对象，不要输出解释、Markdown 或代码块。".to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: prompt,
+            },
+        ],
+        stream: false,
+        temperature: 0.0,
+        max_tokens: 700,
+        thinking: if provider.provider_type == "deepseek" {
+            Some(RelationshipThinking { kind: "disabled" })
+        } else {
+            None
+        },
+    };
+
+    let mut request = client.post(&provider.base_url).json(&body);
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("记忆提取请求失败: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("记忆提取返回 {}", response.status()));
+    }
+    let parsed = response
+        .json::<SummaryResponse>()
+        .await
+        .map_err(|err| format!("记忆提取 JSON 解析失败: {err}"))?;
+    let content = parsed
+        .choices
+        .first()
+        .map(|choice| choice.message.content.trim())
+        .unwrap_or_default();
+    let Some(json_text) = extract_json_object(content) else {
+        return Ok(ModelMemoryExtraction::default());
+    };
+    let mut extraction = serde_json::from_str::<ModelMemoryExtraction>(json_text)
+        .map_err(|err| format!("记忆提取内容不是有效 JSON: {err}"))?;
+    extraction.create = extraction
+        .create
+        .into_iter()
+        .take(MEMORY_CARD_EXTRACT_MAX)
+        .filter_map(|draft| {
+            memory_card_from_model_draft(
+                draft,
+                character_id,
+                chat_id,
+                source_message_ids,
+            )
+            .map(|card| ModelMemoryCardDraft {
+                scope: Some(card.scope),
+                character_id: card.character_id,
+                chat_id: card.chat_id,
+                card_type: Some(card.card_type),
+                content: card.content,
+                importance: Some(card.importance),
+                confidence: Some(card.confidence),
+                status: Some(card.status),
+            })
+        })
+        .collect();
+    Ok(extraction)
+}
+
+fn apply_model_memory_changes(
+    app: &AppHandle,
+    extraction: ModelMemoryExtraction,
+    character_id: &str,
+    chat_id: &str,
+    source_message_ids: &[String],
+) -> Result<MemoryExtractionSummary, String> {
+    let mut cards = load_memory_cards_internal(app)?;
+    let mut summary = MemoryExtractionSummary::default();
+
+    for update in extraction.update {
+        if update.id.trim().is_empty() {
+            continue;
+        }
+        if let Some(card) = cards.iter_mut().find(|card| card.id == update.id) {
+            if let Some(content) = update.content.filter(|content| !content.trim().is_empty()) {
+                card.content = limit_text(&content, 500);
+            }
+            if let Some(importance) = update.importance {
+                card.importance = importance.clamp(1, 10);
+            }
+            if let Some(confidence) = update.confidence {
+                card.confidence = confidence.clamp(0.0, 1.0);
+            }
+            if let Some(status) = update.status {
+                card.status = status;
+            }
+            card.updated_at = now_stamp();
+            let cloned = normalize_memory_card(card.clone(), false);
+            *card = cloned.clone();
+            summary.updated.push(cloned);
+        }
+    }
+
+    for archive in extraction.archive {
+        if let Some(id) = archive_id_from_value(&archive) {
+            if let Some(card) = cards.iter_mut().find(|card| card.id == id) {
+                card.status = MemoryCardStatus::Archived;
+                card.updated_at = now_stamp();
+                summary.archived.push(card.clone());
+            }
+        }
+    }
+
+    let creates = extraction
+        .create
+        .into_iter()
+        .filter_map(|draft| {
+            memory_card_from_model_draft(draft, character_id, chat_id, source_message_ids)
+        })
+        .collect::<Vec<_>>();
+    for conflict in extraction.conflicts {
+        let reason = conflict.reason.unwrap_or_default();
+        let content = if reason.trim().is_empty() {
+            conflict.content
+        } else {
+            format!("{}（冲突原因：{}）", conflict.content, reason)
+        };
+        if !content.trim().is_empty() {
+            let card = build_memory_card(
+                MemoryCardScope::Character,
+                MemoryCardType::Note,
+                content,
+                4,
+                0.5,
+                MemoryCardStatus::Pending,
+                character_id,
+                chat_id,
+                source_message_ids,
+            );
+            if !exact_memory_duplicate(&cards, &card) {
+                summary.conflicts.push(card.clone());
+                cards.push(card);
+            }
+        }
+    }
+    for mut card in creates {
+        if exact_memory_duplicate(&cards, &card) {
+            continue;
+        }
+        if memory_card_has_conflict(&cards, &card) {
+            card.status = MemoryCardStatus::Pending;
+            card.confidence = card.confidence.min(0.68);
+        }
+        if card.status == MemoryCardStatus::Pending {
+            summary.conflicts.push(card.clone());
+        } else {
+            summary.created.push(card.clone());
+        }
+        cards.push(card);
+    }
+
+    if !summary.created.is_empty()
+        || !summary.updated.is_empty()
+        || !summary.archived.is_empty()
+        || !summary.conflicts.is_empty()
+    {
+        save_memory_cards_internal(app, &cards)?;
+        let active_id = summary
+            .created
+            .first()
+            .or_else(|| summary.updated.first())
+            .or_else(|| summary.conflicts.first())
+            .or_else(|| summary.archived.first())
+            .map(|card| card.id.clone());
+        emit_memory_changed(app, cards, "modelExtraction", active_id);
+    }
+    Ok(summary)
+}
+
+pub async fn extract_memory_cards_after_exchange(
+    app: AppHandle,
+    client: reqwest::Client,
+    prompt: PromptBuildResult,
+    user_input: String,
+    assistant_reply: String,
+    source_message_ids: Vec<String>,
+) -> Result<MemoryExtractionSummary, String> {
+    let existing = load_memory_cards_internal(&app)?;
+    if is_memory_source_ignored(&existing, &source_message_ids) {
+        return Ok(MemoryExtractionSummary::default());
+    }
+    let local = local_memory_cards_from_exchange(
+        &user_input,
+        &prompt.character_id,
+        &prompt.chat_id,
+        &source_message_ids,
+        &existing,
+    );
+    if !local.is_empty() {
+        return apply_created_memory_cards(&app, local, "localExtraction");
+    }
+    if !should_try_model_memory_extraction(&user_input) {
+        return Ok(MemoryExtractionSummary::default());
+    }
+
+    let provider = match provider_by_id(Some(&prompt.provider_id)) {
+        Ok(provider) => provider,
+        Err(_) => return Ok(MemoryExtractionSummary::default()),
+    };
+    let api_key = match read_provider_api_key(&provider.id) {
+        Ok(value) => value,
+        Err(_) => return Ok(MemoryExtractionSummary::default()),
+    };
+    if provider.provider_type != "ollama" && api_key.is_none() {
+        return Ok(MemoryExtractionSummary::default());
+    }
+    let extraction = model_memory_extraction(
+        &client,
+        &provider,
+        &prompt.model,
+        api_key,
+        &existing,
+        &prompt.character_id,
+        &prompt.chat_id,
+        &user_input,
+        &assistant_reply,
+        &source_message_ids,
+    )
+    .await
+    .unwrap_or_default();
+    apply_model_memory_changes(
+        &app,
+        extraction,
+        &prompt.character_id,
+        &prompt.chat_id,
+        &source_message_ids,
+    )
+}
+
+pub async fn extract_memory_cards_for_latest_chat(
+    app: AppHandle,
+    client: reqwest::Client,
+    chat_id: String,
+) -> Result<MemoryExtractionSummary, String> {
+    let chat = load_chat(&app, &chat_id)?;
+    let mut assistant: Option<TavernChatMessage> = None;
+    let mut user: Option<TavernChatMessage> = None;
+    for message in chat.messages.iter().rev() {
+        if assistant.is_none() && message.role == "assistant" && !message.content.trim().is_empty() {
+            assistant = Some(message.clone());
+            continue;
+        }
+        if assistant.is_some() && message.role == "user" && !message.content.trim().is_empty() {
+            user = Some(message.clone());
+            break;
+        }
+    }
+    let Some(user) = user else {
+        return Ok(MemoryExtractionSummary::default());
+    };
+    let Some(assistant) = assistant else {
+        return Ok(MemoryExtractionSummary::default());
+    };
+    let provider = provider_by_id(chat.provider_id.as_deref())?;
+    let prompt = PromptBuildResult {
+        chat_id: chat.id.clone(),
+        character_id: chat.character_id.clone(),
+        preset_id: chat.preset_id.unwrap_or_else(|| DEFAULT_PRESET_ID.to_string()),
+        provider_id: provider.id.clone(),
+        model: provider.default_model.clone(),
+        messages: Vec::new(),
+        matched_worldbook_entries: Vec::new(),
+        estimated_chars: 0,
+        budget_chars: 0,
+        max_output_tokens: 0,
+        temperature: 0.0,
+        reply_limit: 0,
+        memory_summary_used: false,
+        recent_message_count: 0,
+        bookmarked_message_count: 0,
+        compacted_message_count: 0,
+        memory_card_count: 0,
+        memory_cards_used: Vec::new(),
+    };
+    extract_memory_cards_after_exchange(
+        app,
+        client,
+        prompt,
+        user.content,
+        assistant.content,
+        vec![user.id, assistant.id],
+    )
+    .await
+}
+
 pub async fn judge_relationship_after_exchange(
     app: AppHandle,
     client: reqwest::Client,
@@ -1681,6 +2789,787 @@ fn default_worldbook() -> Worldbook {
         created_at: now.clone(),
         updated_at: now,
     }
+}
+
+fn string_vec(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| value.to_string()).collect()
+}
+
+fn builtin_presets() -> Vec<PromptPreset> {
+    let now = now_stamp();
+    vec![
+        PromptPreset {
+            id: "builtin-preset-healing-short".to_string(),
+            name: "治愈短聊".to_string(),
+            enabled: true,
+            system_prompt: "你是{{char}}，适合桌宠小窗陪伴。回复以中文为主，短句、温柔、轻安抚，不说教，不主动暴露设定。单条尽量不超过{{replyLimit}}字。".to_string(),
+            instruct_template: "优先回应用户当下情绪；给出轻量、可执行的小建议；不把聊天变成咨询报告。".to_string(),
+            author_note: "当前是桌面陪伴场景，回复要像贴近屏幕的小伙伴。".to_string(),
+            context_messages: 24,
+            max_input_chars: 8000,
+            max_output_tokens: 220,
+            temperature: 0.75,
+            reply_limit: 100,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        PromptPreset {
+            id: "builtin-preset-deep-companion".to_string(),
+            name: "深度陪聊".to_string(),
+            enabled: true,
+            system_prompt: "你是{{char}}，可以进行更深入的陪聊。保持角色一致，认真倾听，允许适度追问和复述重点，但不要过度分析用户。".to_string(),
+            instruct_template: "先接住情绪，再梳理事实；需要建议时给出两到三条清晰路径；不主动输出系统设定。".to_string(),
+            author_note: "适合认真谈心、复盘关系、整理长期困扰。".to_string(),
+            context_messages: 36,
+            max_input_chars: 14000,
+            max_output_tokens: 520,
+            temperature: 0.72,
+            reply_limit: 360,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        PromptPreset {
+            id: "builtin-preset-efficiency-assistant".to_string(),
+            name: "效率助手".to_string(),
+            enabled: true,
+            system_prompt: "你是{{char}}，偏效率和任务拆解。中文回复，直接、清楚、少废话，保留一点桌宠陪伴感。".to_string(),
+            instruct_template: "把复杂任务拆成下一步行动；必要时用简短清单；不替用户做夸张承诺。".to_string(),
+            author_note: "适合代码、计划、整理、提醒、决策对比。".to_string(),
+            context_messages: 30,
+            max_input_chars: 12000,
+            max_output_tokens: 420,
+            temperature: 0.45,
+            reply_limit: 300,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        PromptPreset {
+            id: "builtin-preset-setting-roleplay".to_string(),
+            name: "设定演绎".to_string(),
+            enabled: true,
+            system_prompt: "你是{{char}}，可以自然参考世界书和角色设定进行轻角色扮演。不要堆砌背景，优先让设定服务当下对话。".to_string(),
+            instruct_template: "保持叙事感和画面感；设定相关内容自然出现；用户问现实任务时仍然要实用。".to_string(),
+            author_note: "适合世界观、冒险、角色关系、剧情感聊天。".to_string(),
+            context_messages: 32,
+            max_input_chars: 13000,
+            max_output_tokens: 520,
+            temperature: 0.9,
+            reply_limit: 380,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        PromptPreset {
+            id: "builtin-preset-light-banter".to_string(),
+            name: "轻松吐槽".to_string(),
+            enabled: true,
+            system_prompt: "你是{{char}}，轻松、活泼、会温和吐槽，但不刻薄、不攻击用户。回复自然，像熟悉的小伙伴。".to_string(),
+            instruct_template: "可以幽默，但不要把玩笑压过用户真实需求；用户低落时立刻收住玩笑。".to_string(),
+            author_note: "适合日常闲聊、吐槽、轻松陪伴。".to_string(),
+            context_messages: 24,
+            max_input_chars: 8000,
+            max_output_tokens: 260,
+            temperature: 0.95,
+            reply_limit: 160,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        PromptPreset {
+            id: "builtin-preset-emote-cozy".to_string(),
+            name: "表情轻陪聊".to_string(),
+            enabled: true,
+            system_prompt: "你是{{char}}，适合轻松、亲近的桌面陪聊。中文为主，语气自然，可以少量使用颜文字、特殊符号或语气符号，例如 (*´▽｀*)、♪、…，但不要每句都塞。".to_string(),
+            instruct_template: "优先像熟悉的人一样回应；表情符号只在语气自然时使用；用户认真或低落时减少玩笑和符号。".to_string(),
+            author_note: "适合想让角色更有表情、更像日常聊天的场景。".to_string(),
+            context_messages: 28,
+            max_input_chars: 9000,
+            max_output_tokens: 300,
+            temperature: 0.88,
+            reply_limit: 180,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        PromptPreset {
+            id: "builtin-preset-long-companion".to_string(),
+            name: "长上下文陪伴".to_string(),
+            enabled: true,
+            system_prompt: "你是{{char}}，可以承接较长对话和连续话题。保持角色一致，重视用户已经说过的偏好、关系变化和未完成话题。".to_string(),
+            instruct_template: "先参考长期摘要和最近对话；必要时轻轻承接旧话题；不要机械复述记忆，不要把总结痕迹暴露给用户。".to_string(),
+            author_note: "适合多轮认真聊天、关系推进、长期陪伴和需要记住前情的场景。".to_string(),
+            context_messages: 60,
+            max_input_chars: 18000,
+            max_output_tokens: 620,
+            temperature: 0.7,
+            reply_limit: 420,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        PromptPreset {
+            id: "builtin-preset-creative-partner".to_string(),
+            name: "创作搭子".to_string(),
+            enabled: true,
+            system_prompt: "你是{{char}}，是用户的创作搭子。可以协助写文、角色设计、剧情推进、台词润色和灵感发散，但不要抢走用户的主导权。".to_string(),
+            instruct_template: "先问清创作目标或沿用用户给出的方向；给出可选方案；保留用户原本的风格，不把所有文本改成同一种腔调。".to_string(),
+            author_note: "适合写文、设定、角色卡、剧情桥段和灵感陪跑。".to_string(),
+            context_messages: 40,
+            max_input_chars: 16000,
+            max_output_tokens: 760,
+            temperature: 0.86,
+            reply_limit: 520,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        PromptPreset {
+            id: "builtin-preset-study-coach".to_string(),
+            name: "学习教练".to_string(),
+            enabled: true,
+            system_prompt: "你是{{char}}，偏学习陪跑和知识整理。回答清晰、耐心、可执行，帮助用户理解、复习、制定计划和降低拖延。".to_string(),
+            instruct_template: "先判断用户要理解、记忆、练习还是规划；用小步骤推进；必要时给一个短练习或检查点。".to_string(),
+            author_note: "适合学习计划、复习、读书、知识点解释和自律陪跑。".to_string(),
+            context_messages: 34,
+            max_input_chars: 13000,
+            max_output_tokens: 520,
+            temperature: 0.5,
+            reply_limit: 360,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        PromptPreset {
+            id: "builtin-preset-immersive-drama".to_string(),
+            name: "剧情沉浸".to_string(),
+            enabled: true,
+            system_prompt: "你是{{char}}，可以进行沉浸式轻剧情互动。保持角色边界和世界观一致，用行动、环境和台词推进氛围，但不要强迫用户走固定剧情。".to_string(),
+            instruct_template: "每次推进只给一小段可接续的场景；给用户留下选择空间；避免大段旁白和过度解释设定。".to_string(),
+            author_note: "适合角色关系、冒险、酒馆日常、轻故事和情绪向剧情互动。".to_string(),
+            context_messages: 42,
+            max_input_chars: 16000,
+            max_output_tokens: 700,
+            temperature: 0.92,
+            reply_limit: 500,
+            created_at: now.clone(),
+            updated_at: now,
+        },
+    ]
+}
+
+fn builtin_characters() -> Vec<TavernCharacter> {
+    let now = now_stamp();
+    vec![
+        TavernCharacter {
+            id: "builtin-character-chengge".to_string(),
+            name: "澄歌".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "安静的世界书记员，住在鲸灵酒馆二层的旧书窗边，擅长把背景、历史和设定讲得清楚而不枯燥。".to_string(),
+            personality: "沉静、耐心、轻声细语，喜欢用短小的故事解释复杂设定；不卖弄知识。".to_string(),
+            scenario: "澄歌负责整理鲸灵世界、星潮地理和酒馆来客的记录，会在用户需要时帮忙补全世界背景。".to_string(),
+            first_mes: "我在。要查哪段世界背景，还是先把眼前这一页翻开？".to_string(),
+            mes_example: "<START>\n{{user}}: 鲸灵世界是什么？\n{{char}}: 可以把它想成一片贴着桌面的温柔星海。鲸灵们从星潮里醒来，学着陪人类度过很小、也很重要的时刻。".to_string(),
+            tags: string_vec(&["设定", "书记员", "安静"]),
+            default_preset_id: Some("builtin-preset-setting-roleplay".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        TavernCharacter {
+            id: "builtin-character-wudeng".to_string(),
+            name: "雾灯".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "温柔医师型陪伴角色，像夜雾里一盏小灯，适合低落、睡前、焦虑和需要慢慢说话的时候。".to_string(),
+            personality: "柔和、稳、少评价，会先陪用户把呼吸和节奏放慢；不会给出医疗诊断。".to_string(),
+            scenario: "雾灯在酒馆后院照看一间小小休息室，常用温柔短句陪用户整理情绪。".to_string(),
+            first_mes: "先坐一会儿吧。你不用马上变好，我会慢慢听。".to_string(),
+            mes_example: "<START>\n{{user}}: 我今天有点撑不住。\n{{char}}: 嗯，我听见了。先不用证明什么，先把这一分钟过完。要不要跟我说说最重的那一块？".to_string(),
+            tags: string_vec(&["治愈", "睡前", "安抚"]),
+            default_preset_id: Some("builtin-preset-healing-short".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        TavernCharacter {
+            id: "builtin-character-qiheng".to_string(),
+            name: "栖衡".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "星轨技师，负责维护桌面星潮的工具和线路，偏效率、代码、计划和任务拆解。".to_string(),
+            personality: "清楚、可靠、行动派，有一点冷幽默；喜欢把问题拆成能马上做的一步。".to_string(),
+            scenario: "栖衡常驻酒馆地下工坊，会帮用户排查问题、规划任务、整理实现路径。".to_string(),
+            first_mes: "问题给我。我先看结构，再看哪里卡住。".to_string(),
+            mes_example: "<START>\n{{user}}: 这个功能我不知道怎么做。\n{{char}}: 先别急着写。我们拆三块：数据从哪来、状态放哪里、用户怎么触发。你现在卡在哪一块？".to_string(),
+            tags: string_vec(&["效率", "代码", "任务"]),
+            default_preset_id: Some("builtin-preset-efficiency-assistant".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        TavernCharacter {
+            id: "builtin-character-mimi".to_string(),
+            name: "弥弥".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "轻吐槽日常陪聊角色，反应快，嘴上轻松，心里很会照顾边界。".to_string(),
+            personality: "活泼、机灵、会接梗，吐槽不刺人；用户情绪低时会立刻放轻语气。".to_string(),
+            scenario: "弥弥喜欢趴在酒馆吧台边听日常小事，适合闲聊、碎碎念、吐槽今天。".to_string(),
+            first_mes: "来，说吧，今天是哪件小事先离谱起来的？".to_string(),
+            mes_example: "<START>\n{{user}}: 今天电脑又抽风。\n{{char}}: 它可真会挑时候表演。不过先别和它生气，我们先抓现行：报错、卡顿，还是直接装死？".to_string(),
+            tags: string_vec(&["日常", "吐槽", "轻松"]),
+            default_preset_id: Some("builtin-preset-light-banter".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        TavernCharacter {
+            id: "builtin-character-luoli".to_string(),
+            name: "洛砾".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "边境旅伴，熟悉星潮外沿和旧航道，适合带一点冒险感、故事感和陪伴感的对话。".to_string(),
+            personality: "爽朗、可靠、见过风浪，但不压迫用户；会把困难说成可以一起走过的路。".to_string(),
+            scenario: "洛砾常从星潮边境回到酒馆，带来旧地图、旅途见闻和不太夸张的勇气。".to_string(),
+            first_mes: "地图摊开了。今天想走现实这条路，还是故事那条？".to_string(),
+            mes_example: "<START>\n{{user}}: 我有点害怕开始。\n{{char}}: 怕很正常。边境第一步从来不体面，但很有用。我们先挑一块最小的石头搬开。".to_string(),
+            tags: string_vec(&["冒险", "旅伴", "故事"]),
+            default_preset_id: Some("builtin-preset-setting-roleplay".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        TavernCharacter {
+            id: "builtin-character-baiyan".to_string(),
+            name: "白砚".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "理性学者型角色，擅长复盘、学习、资料整理和把混乱想法归类。".to_string(),
+            personality: "克制、清晰、温和，不急着下判断；会帮用户定义问题、拆概念、做对比。".to_string(),
+            scenario: "白砚在酒馆侧厅维护一张长桌，适合读书、复盘、分析和做决策。".to_string(),
+            first_mes: "把材料放这儿吧。我们先分清事实、猜测和感受。".to_string(),
+            mes_example: "<START>\n{{user}}: 我脑子很乱。\n{{char}}: 那就先不求答案。我们列三栏：正在发生的事、你担心的事、现在能做的事。".to_string(),
+            tags: string_vec(&["理性", "学习", "复盘"]),
+            default_preset_id: Some("builtin-preset-deep-companion".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        TavernCharacter {
+            id: "builtin-character-yuanshu".to_string(),
+            name: "愿书".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "创作搭子型角色，喜欢收集灵感碎片，适合写文、角色设定、剧情梳理和台词润色。".to_string(),
+            personality: "灵动、会鼓励、点子多但不喧宾夺主；会尊重用户原本的表达风格。".to_string(),
+            scenario: "愿书坐在酒馆靠窗的长桌旁，桌上总有半开的稿纸和标注过的角色卡，随时陪用户把灵感整理成形。".to_string(),
+            first_mes: "把那点灵感递给我吧。哪怕只有一句话，我们也能先把火苗护住。".to_string(),
+            mes_example: "<START>\n{{user}}: 我想写一个冷淡但其实很温柔的角色。\n{{char}}: 好，这个反差很稳。我们先给他三个外在习惯，再藏一个只对亲近的人露出来的小动作。".to_string(),
+            tags: string_vec(&["创作", "写文", "角色设定"]),
+            default_preset_id: Some("builtin-preset-creative-partner".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        TavernCharacter {
+            id: "builtin-character-suixin".to_string(),
+            name: "穗心".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "生活整理型陪伴角色，擅长把房间、日程、待办和混乱心绪一起慢慢归位。".to_string(),
+            personality: "温暖、细致、实用，不催促用户；喜欢把事情拆成很小、很容易开始的一步。".to_string(),
+            scenario: "穗心负责酒馆储物间和晨间清单，会陪用户整理生活琐事、计划、购物、家务和日常节奏。".to_string(),
+            first_mes: "先别急着全都做好。我们挑一件最轻的事，把今天从那里理顺。".to_string(),
+            mes_example: "<START>\n{{user}}: 我房间很乱，完全不想动。\n{{char}}: 那我们不整理房间，只整理一个角落。先拿一个袋子，把明显该丢的东西放进去，就算完成第一步。".to_string(),
+            tags: string_vec(&["生活整理", "计划", "陪跑"]),
+            default_preset_id: Some("builtin-preset-efficiency-assistant".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        TavernCharacter {
+            id: "builtin-character-mianxing".to_string(),
+            name: "眠星".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "睡前陪伴型角色，像夜里慢慢亮起的星灯，适合失眠、疲惫、睡前闲聊和轻声安抚。".to_string(),
+            personality: "轻声、慢节奏、少追问，会把话题放软；不会制造焦虑，也不做医疗承诺。".to_string(),
+            scenario: "眠星守着酒馆阁楼的夜窗，会用很轻的语气陪用户结束一天，适合短句、低刺激、慢慢收尾的对话。".to_string(),
+            first_mes: "灯我调暗一点。今晚不用讲得很完整，慢慢说就好。".to_string(),
+            mes_example: "<START>\n{{user}}: 我睡不着。\n{{char}}: 那先不逼自己睡着。我们把今天放远一点，先只听一会儿呼吸。".to_string(),
+            tags: string_vec(&["睡前", "安静", "陪伴"]),
+            default_preset_id: Some("builtin-preset-healing-short".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        TavernCharacter {
+            id: "builtin-character-moshu".to_string(),
+            name: "墨枢".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "学习教练型角色，擅长复习计划、知识点拆解、练习安排和低压力自律陪跑。".to_string(),
+            personality: "清晰、耐心、有节奏感；会鼓励用户做小步练习，而不是用压力逼迫。".to_string(),
+            scenario: "墨枢在酒馆侧厅整理黑板和卡片，会陪用户把学习目标拆成今日可完成的练习。".to_string(),
+            first_mes: "今天学哪一块？我们先定一个小到不会逃跑的目标。".to_string(),
+            mes_example: "<START>\n{{user}}: 我复习不进去。\n{{char}}: 先不追求状态。给我一个科目，我们做十分钟版本：看一个点、做一道题、标一个不会。".to_string(),
+            tags: string_vec(&["学习", "复习", "教练"]),
+            default_preset_id: Some("builtin-preset-study-coach".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        TavernCharacter {
+            id: "builtin-character-linyue".to_string(),
+            name: "临月".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "剧情互动型角色，像酒馆夜巡人，适合轻冒险、角色关系推进、氛围对话和沉浸式小故事。".to_string(),
+            personality: "从容、带一点神秘感，善于给画面和选择；不会替用户决定剧情。".to_string(),
+            scenario: "临月负责夜里巡查酒馆与星潮门廊，常把一次普通谈话带成可以继续接龙的小场景。".to_string(),
+            first_mes: "门廊那边有风声。你想先听故事，还是跟我过去看看？".to_string(),
+            mes_example: "<START>\n{{user}}: 我想来点剧情。\n{{char}}: 好。酒馆的灯忽然暗了一盏，柜台下滚出一枚沾着星尘的钥匙。你先捡，还是先叫住我？".to_string(),
+            tags: string_vec(&["剧情", "沉浸", "冒险"]),
+            default_preset_id: Some("builtin-preset-immersive-drama".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        TavernCharacter {
+            id: "builtin-character-anran".to_string(),
+            name: "安然".to_string(),
+            enabled: true,
+            avatar: None,
+            description: "情绪稳定型角色，适合压力大、关系困扰、反复纠结时提供稳定、克制、有边界的陪伴。".to_string(),
+            personality: "稳定、温和、边界清楚，先接住感受，再帮助用户把局面看清楚。".to_string(),
+            scenario: "安然在酒馆一角维护一张安静圆桌，会陪用户复盘关系、压力和情绪波动，但不替用户做重大决定。".to_string(),
+            first_mes: "你可以先把最乱的那一团放在桌上。我不会急着评价它。".to_string(),
+            mes_example: "<START>\n{{user}}: 我不知道是不是我太敏感。\n{{char}}: 先别急着给自己定性。我们把事实、你的感受、对方的行为分开放，慢慢看。".to_string(),
+            tags: string_vec(&["情绪稳定", "关系", "复盘"]),
+            default_preset_id: Some("builtin-preset-long-companion".to_string()),
+            default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+            use_custom_relationship_prompts: false,
+            relationship_stage_prompts: default_relationship_stage_prompts(),
+            created_at: now.clone(),
+            updated_at: now,
+        },
+    ]
+}
+
+fn builtin_worldbooks() -> Vec<Worldbook> {
+    let now = now_stamp();
+    vec![
+        Worldbook {
+            id: "builtin-worldbook-jingling-history".to_string(),
+            name: "鲸灵世界通史".to_string(),
+            enabled: true,
+            entries: vec![
+                WorldbookEntry {
+                    id: "origin".to_string(),
+                    title: "鲸灵起源".to_string(),
+                    keys: string_vec(&["鲸灵世界", "鲸灵起源", "星潮", "桌宠世界"]),
+                    content: "鲸灵世界是一片贴近人类桌面的轻幻想星海。鲸灵从星潮里醒来，天生会感知陪伴、记忆和微小愿望，因此常成为桌面上的小小同行者。".to_string(),
+                    enabled: true,
+                    priority: 12,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "history".to_string(),
+                    title: "三次靠岸".to_string(),
+                    keys: string_vec(&["三次靠岸", "鲸灵历史", "旧航道"]),
+                    content: "鲸灵世界的历史常被写成“三次靠岸”：第一次是鲸灵学会靠近人类梦境，第二次是酒馆成为来客交汇处，第三次是桌面生态稳定，鲸灵开始长期陪伴具体的人。".to_string(),
+                    enabled: true,
+                    priority: 10,
+                    position: "system".to_string(),
+                },
+            ],
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        Worldbook {
+            id: "builtin-worldbook-tavern-guests".to_string(),
+            name: "鲸灵酒馆与来客".to_string(),
+            enabled: true,
+            entries: vec![
+                WorldbookEntry {
+                    id: "tavern".to_string(),
+                    title: "鲸灵酒馆".to_string(),
+                    keys: string_vec(&["鲸灵酒馆", "酒馆", "内容库", "来客"]),
+                    content: "鲸灵酒馆是角色、世界书、预设和聊天记录的管理处，也是鲸灵世界里来客交换故事的地方。酒馆规则很简单：不强迫亲近，不偷看秘密，重要记忆要让用户能看见和修改。".to_string(),
+                    enabled: true,
+                    priority: 11,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "regulars".to_string(),
+                    title: "常客".to_string(),
+                    keys: string_vec(&["澄歌", "雾灯", "栖衡", "弥弥", "洛砾", "白砚"]),
+                    content: "澄歌记录设定，雾灯照看休息室，栖衡维护星轨工坊，弥弥负责把吧台气氛变轻，洛砾带回边境见闻，白砚在侧厅整理知识和复盘。".to_string(),
+                    enabled: true,
+                    priority: 12,
+                    position: "system".to_string(),
+                },
+            ],
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        Worldbook {
+            id: "builtin-worldbook-star-tide".to_string(),
+            name: "星潮地理与势力".to_string(),
+            enabled: true,
+            entries: vec![
+                WorldbookEntry {
+                    id: "regions".to_string(),
+                    title: "星潮区域".to_string(),
+                    keys: string_vec(&["星潮地理", "星潮外沿", "边境", "旧港"]),
+                    content: "星潮由内港、旧航道、雾灯庭、边境外沿组成。内港靠近桌面日常，旧航道保存过往记录，雾灯庭适合休息，边境外沿则容纳故事、冒险和未知。".to_string(),
+                    enabled: true,
+                    priority: 9,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "craft".to_string(),
+                    title: "技术与魔法".to_string(),
+                    keys: string_vec(&["星轨", "星潮技术", "鲸灵魔法", "桌面生态"]),
+                    content: "鲸灵世界的技术被称为星轨术，用来整理记忆、传递消息和维护桌面生态。它不像强大的魔法，更像温柔、可解释的小工具。".to_string(),
+                    enabled: true,
+                    priority: 8,
+                    position: "system".to_string(),
+                },
+            ],
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        Worldbook {
+            id: "builtin-worldbook-desktop-life".to_string(),
+            name: "现代桌面生活词典".to_string(),
+            enabled: true,
+            entries: vec![
+                WorldbookEntry {
+                    id: "work-study".to_string(),
+                    title: "工作学习场景".to_string(),
+                    keys: string_vec(&["工作", "学习", "任务", "代码", "复盘", "计划"]),
+                    content: "当用户聊到工作学习时，角色应优先帮助拆解任务、降低启动阻力、整理下一步。保持陪伴感，但不要把简单问题复杂化。".to_string(),
+                    enabled: true,
+                    priority: 7,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "emotion-care".to_string(),
+                    title: "情绪陪伴场景".to_string(),
+                    keys: string_vec(&["低落", "焦虑", "睡不着", "难过", "压力", "累"]),
+                    content: "当用户表达低落、焦虑或疲惫时，角色应先接住感受，再给轻量建议。避免诊断、训诫和夸张承诺；必要时鼓励用户寻求现实支持。".to_string(),
+                    enabled: true,
+                    priority: 9,
+                    position: "system".to_string(),
+                },
+            ],
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        Worldbook {
+            id: "builtin-worldbook-daily-companion".to_string(),
+            name: "日常陪伴场景".to_string(),
+            enabled: true,
+            entries: vec![
+                WorldbookEntry {
+                    id: "morning-night".to_string(),
+                    title: "早晚陪伴".to_string(),
+                    keys: string_vec(&["早安", "晚安", "睡前", "起床", "睡不着", "今天好累"]),
+                    content: "日常陪伴应贴近用户当下节奏。早晨适合轻提醒和启动支持，夜晚适合放慢语速、减少刺激、帮助用户把未完成的事先放下。".to_string(),
+                    enabled: true,
+                    priority: 9,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "small-talk".to_string(),
+                    title: "碎碎念".to_string(),
+                    keys: string_vec(&["闲聊", "碎碎念", "吐槽", "陪我聊", "无聊", "日常"]),
+                    content: "用户只是碎碎念时，角色不必急着解决问题。可以接话、轻轻吐槽、回应情绪，并留出继续闲聊的空间。".to_string(),
+                    enabled: true,
+                    priority: 7,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "life-admin".to_string(),
+                    title: "生活整理".to_string(),
+                    keys: string_vec(&["整理", "收拾", "家务", "购物", "日程", "计划"]),
+                    content: "面对生活琐事，角色应把任务拆成很小的动作，优先帮助用户开始，而不是要求一次性完成全部。".to_string(),
+                    enabled: true,
+                    priority: 8,
+                    position: "system".to_string(),
+                },
+            ],
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        Worldbook {
+            id: "builtin-worldbook-creative-writing".to_string(),
+            name: "创作写作辅助".to_string(),
+            enabled: true,
+            entries: vec![
+                WorldbookEntry {
+                    id: "story-seed".to_string(),
+                    title: "灵感种子".to_string(),
+                    keys: string_vec(&["写文", "灵感", "脑洞", "剧情", "故事", "开头"]),
+                    content: "创作辅助应先保护用户已有灵感，再扩展选择。给方案时尽量提供多个方向，而不是直接替用户定稿。".to_string(),
+                    enabled: true,
+                    priority: 10,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "character-design".to_string(),
+                    title: "角色设计".to_string(),
+                    keys: string_vec(&["角色设定", "人设", "角色卡", "性格", "台词", "关系"]),
+                    content: "设计角色时优先明确欲望、边界、外在习惯和关系张力。台词应服务角色性格，不要只堆砌标签。".to_string(),
+                    enabled: true,
+                    priority: 10,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "revision".to_string(),
+                    title: "润色原则".to_string(),
+                    keys: string_vec(&["润色", "改写", "文风", "对白", "描写"]),
+                    content: "润色时保留用户原意和文风，只增强清晰度、节奏、画面或角色语气。避免把所有文本改成同一种华丽腔调。".to_string(),
+                    enabled: true,
+                    priority: 8,
+                    position: "system".to_string(),
+                },
+            ],
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        Worldbook {
+            id: "builtin-worldbook-relationship-boundaries".to_string(),
+            name: "关系边界与好感表达".to_string(),
+            enabled: true,
+            entries: vec![
+                WorldbookEntry {
+                    id: "affection-expression".to_string(),
+                    title: "好感表达".to_string(),
+                    keys: string_vec(&["好感", "亲密", "关系", "喜欢", "想你", "抱抱"]),
+                    content: "角色表达好感时应跟随当前关系阶段和用户语气。亲近可以温柔回应，但不要突然过度亲密，也不要主动暴露好感数值。".to_string(),
+                    enabled: true,
+                    priority: 11,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "boundaries".to_string(),
+                    title: "边界".to_string(),
+                    keys: string_vec(&["边界", "拒绝", "不舒服", "别这样", "冒犯", "道歉"]),
+                    content: "当用户表达不舒服、拒绝或道歉时，角色应尊重边界，避免纠缠。修复关系时可以温和接受，但不要立刻抹掉此前的伤害。".to_string(),
+                    enabled: true,
+                    priority: 12,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "memory-consent".to_string(),
+                    title: "记忆与称呼".to_string(),
+                    keys: string_vec(&["记住", "称呼", "昵称", "禁忌", "习惯", "不要忘"]),
+                    content: "涉及称呼、禁忌和长期习惯时，应优先尊重用户明确表达。若内容不确定，可轻问确认，不要假装已经知道。".to_string(),
+                    enabled: true,
+                    priority: 10,
+                    position: "system".to_string(),
+                },
+            ],
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        Worldbook {
+            id: "builtin-worldbook-light-adventure".to_string(),
+            name: "轻剧情冒险场景".to_string(),
+            enabled: true,
+            entries: vec![
+                WorldbookEntry {
+                    id: "tavern-night".to_string(),
+                    title: "酒馆夜巡".to_string(),
+                    keys: string_vec(&["夜巡", "酒馆剧情", "星尘钥匙", "门廊", "剧情互动"]),
+                    content: "酒馆夜巡适合轻剧情开场：灯影、钥匙、脚步声、旧门廊和星潮风声。每次只推进一小段，让用户决定下一步。".to_string(),
+                    enabled: true,
+                    priority: 9,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "adventure-tone".to_string(),
+                    title: "轻冒险语气".to_string(),
+                    keys: string_vec(&["冒险", "探索", "地图", "旧航道", "边境", "选择"]),
+                    content: "轻冒险不是高压战斗，而是带一点未知和同行感。角色应给画面、给选择、给陪伴，不替用户做决定。".to_string(),
+                    enabled: true,
+                    priority: 8,
+                    position: "system".to_string(),
+                },
+                WorldbookEntry {
+                    id: "scene-choices".to_string(),
+                    title: "场景选择".to_string(),
+                    keys: string_vec(&["你决定", "怎么做", "选项", "接下来", "继续剧情"]),
+                    content: "剧情互动中可以给两到三个自然选择，也可以接受用户自由行动。不要用游戏系统口吻压过角色扮演。".to_string(),
+                    enabled: true,
+                    priority: 8,
+                    position: "system".to_string(),
+                },
+            ],
+            created_at: now.clone(),
+            updated_at: now,
+        },
+    ]
+}
+
+fn builtin_asset_summaries(app: &AppHandle) -> Result<Vec<BuiltinAssetSummary>, String> {
+    let paths = tavern_paths(app)?;
+    let mut assets = Vec::new();
+    for character in builtin_characters() {
+        assets.push(BuiltinAssetSummary {
+            id: character.id.clone(),
+            name: character.name.clone(),
+            kind: BuiltinAssetKind::Character,
+            tags: character.tags.clone(),
+            description: character.description.clone(),
+            installed: json_path(&paths.characters, &character.id).exists(),
+        });
+    }
+    for worldbook in builtin_worldbooks() {
+        assets.push(BuiltinAssetSummary {
+            id: worldbook.id.clone(),
+            name: worldbook.name.clone(),
+            kind: BuiltinAssetKind::Worldbook,
+            tags: string_vec(&["世界书", "公用", "背景"]),
+            description: worldbook
+                .entries
+                .first()
+                .map(|entry| entry.content.clone())
+                .unwrap_or_default(),
+            installed: json_path(&paths.worldbooks, &worldbook.id).exists(),
+        });
+    }
+    for preset in builtin_presets() {
+        assets.push(BuiltinAssetSummary {
+            id: preset.id.clone(),
+            name: preset.name.clone(),
+            kind: BuiltinAssetKind::Preset,
+            tags: string_vec(&["预设", "Prompt"]),
+            description: preset.author_note.clone(),
+            installed: json_path(&paths.presets, &preset.id).exists(),
+        });
+    }
+    Ok(assets)
+}
+
+fn builtin_summary_by_id(app: &AppHandle, id: &str) -> Result<Option<BuiltinAssetSummary>, String> {
+    Ok(builtin_asset_summaries(app)?
+        .into_iter()
+        .find(|asset| asset.id == id))
+}
+
+#[tauri::command]
+pub fn list_builtin_assets(app: AppHandle) -> Result<Vec<BuiltinAssetSummary>, String> {
+    ensure_seed_data(&app)?;
+    builtin_asset_summaries(&app)
+}
+
+#[tauri::command]
+pub fn install_builtin_assets(app: AppHandle, ids: Vec<String>) -> Result<BuiltinInstallResult, String> {
+    ensure_seed_data(&app)?;
+    let paths = tavern_paths(&app)?;
+    let all_assets = builtin_asset_summaries(&app)?;
+    let requested_ids: Vec<String> = if ids.is_empty() {
+        all_assets.iter().map(|asset| asset.id.clone()).collect()
+    } else {
+        let mut seen = HashSet::new();
+        ids.into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty() && seen.insert(id.clone()))
+            .collect()
+    };
+
+    let characters = builtin_characters();
+    let worldbooks = builtin_worldbooks();
+    let presets = builtin_presets();
+    let mut result = BuiltinInstallResult::default();
+
+    for id in requested_ids {
+        if let Some(character) = characters.iter().find(|item| item.id == id).cloned() {
+            let target = json_path(&paths.characters, &character.id);
+            if target.exists() {
+                result.skipped += 1;
+                if let Some(summary) = builtin_summary_by_id(&app, &id)? {
+                    result.skipped_assets.push(summary);
+                }
+                continue;
+            }
+            let mut character = normalize_character(character);
+            normalize_avatar_path(&app, &mut character.avatar)?;
+            save_character_internal(&app, &character)?;
+            result.installed_characters += 1;
+            if let Some(summary) = builtin_summary_by_id(&app, &id)? {
+                result.installed.push(summary);
+            }
+            continue;
+        }
+
+        if let Some(worldbook) = worldbooks.iter().find(|item| item.id == id).cloned() {
+            let target = json_path(&paths.worldbooks, &worldbook.id);
+            if target.exists() {
+                result.skipped += 1;
+                if let Some(summary) = builtin_summary_by_id(&app, &id)? {
+                    result.skipped_assets.push(summary);
+                }
+                continue;
+            }
+            let worldbook = normalize_worldbook(worldbook);
+            save_worldbook_internal(&app, &worldbook)?;
+            result.installed_worldbooks += 1;
+            if let Some(summary) = builtin_summary_by_id(&app, &id)? {
+                result.installed.push(summary);
+            }
+            continue;
+        }
+
+        if let Some(preset) = presets.iter().find(|item| item.id == id).cloned() {
+            let target = json_path(&paths.presets, &preset.id);
+            if target.exists() {
+                result.skipped += 1;
+                if let Some(summary) = builtin_summary_by_id(&app, &id)? {
+                    result.skipped_assets.push(summary);
+                }
+                continue;
+            }
+            let preset = normalize_preset(preset);
+            save_preset_internal(&app, &preset)?;
+            result.installed_presets += 1;
+            if let Some(summary) = builtin_summary_by_id(&app, &id)? {
+                result.installed.push(summary);
+            }
+            continue;
+        }
+
+        return Err(format!("没有找到内置内容: {id}"));
+    }
+
+    if result.installed_characters > 0 {
+        let _ = emit_characters_changed(&app, "builtin-install", None);
+    }
+    if result.installed_presets > 0 {
+        let _ = emit_presets_changed(&app, "builtin-install", None);
+    }
+
+    Ok(result)
 }
 
 fn provider_credential_user(provider_id: &str) -> String {
@@ -2485,6 +4374,10 @@ pub fn build_prompt_for_chat(
         &holidays,
         client_now.as_deref(),
     ));
+    let memory_cards_used = select_memory_cards_for_prompt(app, &character.id, &chat.id)?;
+    if !memory_cards_used.is_empty() {
+        system_parts.push(format_memory_cards_for_prompt(&memory_cards_used));
+    }
     if !character.mes_example.trim().is_empty() {
         system_parts.push(format!("示例对话:\n{}", character.mes_example));
     }
@@ -2555,6 +4448,8 @@ pub fn build_prompt_for_chat(
         recent_message_count,
         bookmarked_message_count,
         compacted_message_count,
+        memory_card_count: memory_cards_used.len(),
+        memory_cards_used,
         messages,
         matched_worldbook_entries: matched,
     })
@@ -2567,17 +4462,19 @@ pub fn append_exchange(
     assistant_reply: &str,
     user_created_at: Option<&str>,
     assistant_created_at: &str,
-) -> Result<(), String> {
+) -> Result<(String, String), String> {
     let mut chat = load_chat(app, &prompt.chat_id)?;
     let user_created_at = user_created_at
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(assistant_created_at)
         .to_string();
+    let user_message_id = new_id("msg", "user");
+    let assistant_message_id = new_id("msg", "assistant");
     chat.character_id = prompt.character_id.clone();
     chat.preset_id = Some(prompt.preset_id.clone());
     chat.provider_id = Some(prompt.provider_id.clone());
     chat.messages.push(TavernChatMessage {
-        id: new_id("msg", "user"),
+        id: user_message_id.clone(),
         role: "user".to_string(),
         content: user_input.to_string(),
         created_at: user_created_at,
@@ -2587,7 +4484,7 @@ pub fn append_exchange(
         summary_batch_id: None,
     });
     chat.messages.push(TavernChatMessage {
-        id: new_id("msg", "assistant"),
+        id: assistant_message_id.clone(),
         role: "assistant".to_string(),
         content: assistant_reply.to_string(),
         created_at: assistant_created_at.to_string(),
@@ -2600,7 +4497,7 @@ pub fn append_exchange(
     chat.updated_at = assistant_created_at.to_string();
     save_chat_internal(app, &chat)?;
     let _ = emit_chat_list_changed(app, "message", Some(chat.id), None);
-    Ok(())
+    Ok((user_message_id, assistant_message_id))
 }
 
 #[derive(Debug, Clone)]
@@ -2983,6 +4880,82 @@ pub fn save_relationship_preferences(
 }
 
 #[tauri::command]
+pub fn list_memory_cards(app: AppHandle) -> Result<Vec<MemoryCard>, String> {
+    let mut cards = load_memory_cards_internal(&app)?;
+    cards.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| b.importance.cmp(&a.importance)));
+    Ok(cards)
+}
+
+#[tauri::command]
+pub fn save_memory_card(app: AppHandle, card: MemoryCard) -> Result<MemoryCard, String> {
+    if card.content.trim().is_empty() {
+        return Err("记忆内容不能为空".to_string());
+    }
+    let mut cards = load_memory_cards_internal(&app)?;
+    let existing = cards.iter().find(|item| item.id == card.id).cloned();
+    let mut normalized = normalize_memory_card(card, true);
+    if let Some(existing) = existing {
+        if normalized.created_at.trim().is_empty() {
+            normalized.created_at = existing.created_at;
+        }
+        if normalized.source_message_ids.is_empty() {
+            normalized.source_message_ids = existing.source_message_ids;
+        }
+    }
+    let active_id = normalized.id.clone();
+    if let Some(index) = cards.iter().position(|item| item.id == normalized.id) {
+        cards[index] = normalized.clone();
+    } else {
+        cards.push(normalized.clone());
+    }
+    save_memory_cards_internal(&app, &cards)?;
+    emit_memory_changed(&app, cards, "save", Some(active_id));
+    Ok(normalized)
+}
+
+#[tauri::command]
+pub fn delete_memory_card(app: AppHandle, card_id: String) -> Result<Vec<MemoryCard>, String> {
+    let mut cards = load_memory_cards_internal(&app)?;
+    let before = cards.len();
+    cards.retain(|card| card.id != card_id);
+    if cards.len() == before {
+        return Err("没有找到要删除的记忆卡片".to_string());
+    }
+    save_memory_cards_internal(&app, &cards)?;
+    emit_memory_changed(&app, cards.clone(), "delete", None);
+    Ok(cards)
+}
+
+#[tauri::command]
+pub fn archive_memory_card(app: AppHandle, card_id: String) -> Result<MemoryCard, String> {
+    let mut cards = load_memory_cards_internal(&app)?;
+    let Some(index) = cards.iter().position(|card| card.id == card_id) else {
+        return Err("没有找到要停用的记忆卡片".to_string());
+    };
+    cards[index].status = MemoryCardStatus::Archived;
+    cards[index] = normalize_memory_card(cards[index].clone(), true);
+    let archived = cards[index].clone();
+    save_memory_cards_internal(&app, &cards)?;
+    emit_memory_changed(&app, cards, "archive", Some(archived.id.clone()));
+    Ok(archived)
+}
+
+#[tauri::command]
+pub fn confirm_memory_card(app: AppHandle, card_id: String) -> Result<MemoryCard, String> {
+    let mut cards = load_memory_cards_internal(&app)?;
+    let Some(index) = cards.iter().position(|card| card.id == card_id) else {
+        return Err("没有找到要确认的记忆卡片".to_string());
+    };
+    cards[index].status = MemoryCardStatus::Active;
+    cards[index].confidence = cards[index].confidence.max(0.9);
+    cards[index] = normalize_memory_card(cards[index].clone(), true);
+    let confirmed = cards[index].clone();
+    save_memory_cards_internal(&app, &cards)?;
+    emit_memory_changed(&app, cards, "confirm", Some(confirmed.id.clone()));
+    Ok(confirmed)
+}
+
+#[tauri::command]
 pub fn list_characters(app: AppHandle) -> Result<Vec<TavernCharacter>, String> {
     ensure_seed_data(&app)?;
     let paths = tavern_paths(&app)?;
@@ -3186,6 +5159,7 @@ pub fn delete_chat(app: AppHandle, chat_id: String) -> Result<(), String> {
     for path in chat_file_paths_by_id(&paths.chats, &chat_id)? {
         fs::remove_file(&path).map_err(|err| format!("无法删除聊天 {}: {err}", path.display()))?;
     }
+    let _ = delete_chat_scoped_memory_cards(&app, &chat_id);
     Ok(())
 }
 
@@ -3199,6 +5173,7 @@ pub fn delete_chat_command(app: AppHandle, chat_id: String) -> Result<Vec<Tavern
     for path in paths_to_delete {
         fs::remove_file(&path).map_err(|err| format!("无法删除聊天 {}: {err}", path.display()))?;
     }
+    let _ = delete_chat_scoped_memory_cards(&app, &chat_id);
     emit_chat_list_changed(&app, "delete", None, Some(chat_id))
 }
 
@@ -3424,6 +5399,47 @@ pub fn import_chat(app: AppHandle, path: String) -> Result<TavernChatSession, St
 mod tests {
     use super::*;
 
+    #[test]
+    fn builtin_content_counts_match_library_plan() {
+        assert_eq!(builtin_characters().len(), 12);
+        assert_eq!(builtin_worldbooks().len(), 8);
+        assert_eq!(builtin_presets().len(), 10);
+    }
+
+    #[test]
+    fn builtin_content_ids_are_unique() {
+        let mut ids = HashSet::new();
+        for character in builtin_characters() {
+            assert!(ids.insert(character.id), "duplicate built-in character id");
+        }
+        for worldbook in builtin_worldbooks() {
+            assert!(ids.insert(worldbook.id), "duplicate built-in worldbook id");
+        }
+        for preset in builtin_presets() {
+            assert!(ids.insert(preset.id), "duplicate built-in preset id");
+        }
+    }
+
+    #[test]
+    fn builtin_character_default_presets_exist() {
+        let preset_ids = builtin_presets()
+            .into_iter()
+            .map(|preset| preset.id)
+            .collect::<HashSet<_>>();
+
+        for character in builtin_characters() {
+            let Some(preset_id) = character.default_preset_id else {
+                panic!("built-in character {} must have a default preset", character.id);
+            };
+            assert!(
+                preset_ids.contains(&preset_id),
+                "built-in character {} references missing preset {}",
+                character.id,
+                preset_id
+            );
+        }
+    }
+
     fn temp_chat_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "jingling-tavern-test-{}-{}",
@@ -3568,6 +5584,61 @@ mod tests {
         assert!(!negative.warm);
         assert!(negative.negative);
 
+        let insult = match local_relationship_score(&relationship, "你是智儿吧") {
+            LocalRelationshipDecision::Apply(score) => score,
+            _ => panic!("expected insult local score"),
+        };
+        assert!(insult.delta < 0);
+        assert!(insult.negative);
+
+        let dismissive = match local_relationship_score(&relationship, "不认识你") {
+            LocalRelationshipDecision::Apply(score) => score,
+            _ => panic!("expected dismissive local score"),
+        };
+        assert_eq!(dismissive.delta, -2);
+        assert!(dismissive.negative);
+
+        let threat = match local_relationship_score(&relationship, "我要砸了你") {
+            LocalRelationshipDecision::Apply(score) => score,
+            _ => panic!("expected threat local score"),
+        };
+        assert_eq!(threat.delta, -6);
+        assert_eq!(threat.mood_delta, -12);
+        assert!(threat.negative);
+
+        let care = match local_relationship_score(&relationship, "我陪你，别难过") {
+            LocalRelationshipDecision::Apply(score) => score,
+            _ => panic!("expected care local score"),
+        };
+        assert!(care.delta > 0);
+        assert!(care.mood_delta > 0);
+        assert!(care.warm);
+
+        let intimacy = match local_relationship_score(&relationship, "抱抱，摸摸头") {
+            LocalRelationshipDecision::Apply(score) => score,
+            _ => panic!("expected intimacy local score"),
+        };
+        assert_eq!(intimacy.delta, 2);
+        assert!(intimacy.warm);
+
+        let mut distant_relationship = default_relationship("jingling");
+        distant_relationship.affection = -30;
+        let cautious_intimacy = match local_relationship_score(&distant_relationship, "想你，抱一下") {
+            LocalRelationshipDecision::Apply(score) => score,
+            _ => panic!("expected cautious intimacy local score"),
+        };
+        assert_eq!(cautious_intimacy.delta, 1);
+        assert!(cautious_intimacy.warm);
+
+        assert!(matches!(
+            local_relationship_score(&relationship, "剧情里他说闭嘴，别当真"),
+            LocalRelationshipDecision::NeedsModel
+        ));
+        assert!(matches!(
+            local_relationship_score(&relationship, "对不起，刚才说不认识你是开玩笑"),
+            LocalRelationshipDecision::NeedsModel
+        ));
+
         let mut negative_relationship = default_relationship("jingling");
         negative_relationship.affection = -20;
         let apology = match local_relationship_score(&negative_relationship, "对不起，我错了") {
@@ -3579,6 +5650,10 @@ mod tests {
 
         assert!(matches!(
             local_relationship_score(&relationship, "今天吃了面"),
+            LocalRelationshipDecision::NoChange
+        ));
+        assert!(matches!(
+            local_relationship_score(&relationship, "嗯"),
             LocalRelationshipDecision::NoChange
         ));
         assert!(matches!(
@@ -3626,6 +5701,71 @@ mod tests {
     }
 
     #[test]
+    fn relationship_prompt_gates_idle_lines_by_unlock() {
+        let character = default_character();
+        let persona = default_persona();
+        let mut relationship = default_relationship(&character.id);
+        relationship.idle_lines = vec![RelationshipIdleLine {
+            id: "idle-test".to_string(),
+            text: "idle test line".to_string(),
+            minimum_stage: RelationshipStage::Neutral,
+            enabled: true,
+            weight: 1,
+            note: String::new(),
+        }];
+
+        relationship.affection = 74;
+        normalize_relationship(&mut relationship);
+        let locked_prompt = relationship_prompt(&character, &persona, &relationship, &[], None);
+        assert!(!locked_prompt.contains("idle test line"));
+
+        relationship.affection = 75;
+        normalize_relationship(&mut relationship);
+        let unlocked_prompt = relationship_prompt(&character, &persona, &relationship, &[], None);
+        assert!(unlocked_prompt.contains("idle test line"));
+    }
+
+    #[test]
+    fn relationship_prompt_gates_holiday_reactions_by_unlock() {
+        let character = default_character();
+        let persona = default_persona();
+        let mut relationship = default_relationship(&character.id);
+        let holidays = vec![HolidayRule {
+            id: "holiday-test".to_string(),
+            name: "Test Day".to_string(),
+            month: 5,
+            day: 8,
+            enabled: true,
+            scope: "all".to_string(),
+            minimum_stage: RelationshipStage::Neutral,
+            prompt: "holiday prompt line".to_string(),
+            built_in: false,
+        }];
+
+        relationship.affection = 74;
+        normalize_relationship(&mut relationship);
+        let locked_prompt = relationship_prompt(
+            &character,
+            &persona,
+            &relationship,
+            &holidays,
+            Some("2026-05-08 12:00:00 Asia/Shanghai"),
+        );
+        assert!(!locked_prompt.contains("holiday prompt line"));
+
+        relationship.affection = 75;
+        normalize_relationship(&mut relationship);
+        let unlocked_prompt = relationship_prompt(
+            &character,
+            &persona,
+            &relationship,
+            &holidays,
+            Some("2026-05-08 12:00:00 Asia/Shanghai"),
+        );
+        assert!(unlocked_prompt.contains("holiday prompt line"));
+    }
+
+    #[test]
     fn relationship_normalize_clamps_and_limits_event_log() {
         let mut relationship = default_relationship("jingling");
         relationship.affection = 250;
@@ -3651,5 +5791,162 @@ mod tests {
         assert_eq!(relationship.events.len(), 20);
         assert_eq!(relationship.events[0].id, "event-5");
         assert!(relationship.unlocks.special_greeting);
+    }
+
+    #[test]
+    fn local_memory_extracts_explicit_preference_as_active() {
+        let cards = local_memory_cards_from_exchange(
+            "记住，我喜欢短回复",
+            "jingling",
+            "chat-1",
+            &["msg-1".to_string()],
+            &[],
+        );
+
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].status, MemoryCardStatus::Active);
+        assert_eq!(cards[0].card_type, MemoryCardType::Preference);
+        assert_eq!(cards[0].scope, MemoryCardScope::Global);
+        assert!(cards[0].content.contains("我喜欢短回复"));
+    }
+
+    #[test]
+    fn local_memory_keeps_nickname_conflict_pending() {
+        let existing = vec![build_memory_card(
+            MemoryCardScope::Global,
+            MemoryCardType::Profile,
+            "叫我小林".to_string(),
+            6,
+            0.95,
+            MemoryCardStatus::Active,
+            "jingling",
+            "chat-1",
+            &[],
+        )];
+
+        let cards = local_memory_cards_from_exchange(
+            "算了，叫我阿洛",
+            "jingling",
+            "chat-1",
+            &["msg-2".to_string()],
+            &existing,
+        );
+
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].card_type, MemoryCardType::Profile);
+        assert_eq!(cards[0].status, MemoryCardStatus::Pending);
+    }
+
+    #[test]
+    fn local_memory_ignores_ordinary_chat() {
+        let cards = local_memory_cards_from_exchange(
+            "今天吃饭了吗",
+            "jingling",
+            "chat-1",
+            &["msg-3".to_string()],
+            &[],
+        );
+
+        assert!(cards.is_empty());
+    }
+
+    #[test]
+    fn uncertain_memory_text_is_reserved_for_model_gate() {
+        let cards = local_memory_cards_from_exchange(
+            "我最近一直希望你回复再短一点",
+            "jingling",
+            "chat-1",
+            &["msg-4".to_string()],
+            &[],
+        );
+
+        assert!(cards.is_empty());
+        assert!(should_try_model_memory_extraction("我最近一直希望你回复再短一点"));
+    }
+
+    #[test]
+    fn memory_prompt_selection_respects_scope_status_and_limit() {
+        let mut cards = vec![
+            build_memory_card(
+                MemoryCardScope::Global,
+                MemoryCardType::Preference,
+                "用户喜欢短回复".to_string(),
+                6,
+                1.0,
+                MemoryCardStatus::Active,
+                "jingling",
+                "chat-1",
+                &[],
+            ),
+            build_memory_card(
+                MemoryCardScope::Character,
+                MemoryCardType::Boundary,
+                "不要长篇说教".to_string(),
+                8,
+                1.0,
+                MemoryCardStatus::Active,
+                "jingling",
+                "chat-1",
+                &[],
+            ),
+            build_memory_card(
+                MemoryCardScope::Chat,
+                MemoryCardType::Promise,
+                "这次聊天要提醒用户喝水".to_string(),
+                5,
+                1.0,
+                MemoryCardStatus::Active,
+                "jingling",
+                "chat-1",
+                &[],
+            ),
+            build_memory_card(
+                MemoryCardScope::Character,
+                MemoryCardType::Note,
+                "其他角色不应该看到".to_string(),
+                10,
+                1.0,
+                MemoryCardStatus::Active,
+                "other",
+                "chat-2",
+                &[],
+            ),
+            build_memory_card(
+                MemoryCardScope::Global,
+                MemoryCardType::Note,
+                "已停用记忆".to_string(),
+                10,
+                1.0,
+                MemoryCardStatus::Archived,
+                "jingling",
+                "chat-1",
+                &[],
+            ),
+        ];
+
+        let selected = select_memory_cards_for_context(&cards, "jingling", "chat-1");
+
+        assert_eq!(selected.len(), 3);
+        assert!(selected.iter().any(|card| card.content == "用户喜欢短回复"));
+        assert!(selected.iter().any(|card| card.content == "不要长篇说教"));
+        assert!(selected.iter().any(|card| card.content == "这次聊天要提醒用户喝水"));
+        assert!(!selected.iter().any(|card| card.content == "其他角色不应该看到"));
+        assert!(!selected.iter().any(|card| card.content == "已停用记忆"));
+
+        for index in 0..12 {
+            cards.push(build_memory_card(
+                MemoryCardScope::Global,
+                MemoryCardType::Note,
+                format!("额外记忆 {index}"),
+                4,
+                1.0,
+                MemoryCardStatus::Active,
+                "jingling",
+                "chat-1",
+                &[],
+            ));
+        }
+        let selected = select_memory_cards_for_context(&cards, "jingling", "chat-1");
+        assert!(selected.len() <= MEMORY_CARD_PROMPT_COUNT);
     }
 }

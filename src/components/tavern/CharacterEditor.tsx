@@ -9,7 +9,7 @@ interface CharacterEditorProps {
   characters: TavernCharacter[]
   presets: PromptPreset[]
   relationships: CharacterRelationship[]
-  onSave: (character: TavernCharacter) => Promise<void>
+  onSave: (character: TavernCharacter) => Promise<TavernCharacter | undefined>
   onImport: (path: string) => Promise<void>
   onExport: (characterId: string, path: string) => Promise<void>
 }
@@ -63,6 +63,7 @@ function affectionTone(affection: number) {
 export function CharacterEditor({ characters, presets, relationships, onSave, onImport, onExport }: CharacterEditorProps) {
   const [selectedId, setSelectedId] = useState('')
   const [draft, setDraft] = useState<TavernCharacter>(emptyCharacter())
+  const [isCreating, setIsCreating] = useState(false)
   const [tagsText, setTagsText] = useState('')
   const [importPath, setImportPath] = useState('')
   const [exportPath, setExportPath] = useState('')
@@ -77,12 +78,18 @@ export function CharacterEditor({ characters, presets, relationships, onSave, on
   }, [draft.defaultPresetId, presets])
 
   useEffect(() => {
+    if (isCreating) return
     const next = selected || characters[0]
-    if (!next) return
+    if (!next) {
+      setSelectedId('')
+      setDraft(emptyCharacter())
+      setTagsText('')
+      return
+    }
     setSelectedId(next.id)
     setDraft(normalizeCharacterDraft(next))
     setTagsText(next.tags.join(', '))
-  }, [characters, selected])
+  }, [characters, isCreating, selected])
 
   function update<K extends keyof TavernCharacter>(key: K, value: TavernCharacter[K]) {
     setDraft((current) => ({ ...current, [key]: value }))
@@ -114,7 +121,12 @@ export function CharacterEditor({ characters, presets, relationships, onSave, on
   }
 
   async function save() {
-    await onSave(characterPayload())
+    const saved = await onSave(characterPayload())
+    if (!saved) return
+    setIsCreating(false)
+    setSelectedId(saved.id)
+    setDraft(normalizeCharacterDraft(saved))
+    setTagsText(saved.tags.join(', '))
   }
 
   async function uploadAvatar() {
@@ -123,8 +135,16 @@ export function CharacterEditor({ characters, presets, relationships, onSave, on
     const nextDraft = { ...draft, avatar: path }
     setDraft(nextDraft)
     if (nextDraft.id) {
-      await onSave(characterPayload(nextDraft))
+      const saved = await onSave(characterPayload(nextDraft))
+      if (saved) setDraft(normalizeCharacterDraft(saved))
     }
+  }
+
+  function createCharacter() {
+    setIsCreating(true)
+    setSelectedId('')
+    setDraft(emptyCharacter())
+    setTagsText('')
   }
 
   return (
@@ -136,11 +156,7 @@ export function CharacterEditor({ characters, presets, relationships, onSave, on
             className="icon-button"
             title="新角色"
             type="button"
-            onClick={() => {
-              setSelectedId('')
-              setDraft(emptyCharacter())
-              setTagsText('')
-            }}
+            onClick={createCharacter}
           >
             <Plus size={15} />
           </button>
@@ -159,6 +175,7 @@ export function CharacterEditor({ characters, presets, relationships, onSave, on
               }`}
               type="button"
               onClick={() => {
+                setIsCreating(false)
                 setSelectedId(character.id)
                 setDraft(normalizeCharacterDraft(character))
                 setTagsText(character.tags.join(', '))

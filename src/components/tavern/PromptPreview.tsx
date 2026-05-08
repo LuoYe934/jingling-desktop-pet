@@ -129,12 +129,28 @@ export function PromptPreview({ characters, chats, presets }: PromptPreviewProps
               <strong>{result.compactedMessageCount}</strong>
               <span>已压缩</span>
             </div>
+            <div>
+              <strong>{result.memoryCardCount}</strong>
+              <span>记忆卡片</span>
+            </div>
           </div>
 
           <div className="match-strip">
             {result.matchedWorldbookEntries.length
               ? result.matchedWorldbookEntries.map((entry) => <span key={entry.entryId}>{entry.title}</span>)
               : <span>无世界书触发</span>}
+          </div>
+
+          <div className="memory-preview-strip">
+            {result.memoryCardsUsed.length ? (
+              result.memoryCardsUsed.map((card) => (
+                <span key={card.id}>
+                  {card.type} / {card.scope}: {card.content}
+                </span>
+              ))
+            ) : (
+              <span>无记忆卡片注入</span>
+            )}
           </div>
 
           <div className="prompt-message-list">

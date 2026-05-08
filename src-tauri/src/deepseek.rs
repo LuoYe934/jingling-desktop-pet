@@ -301,7 +301,7 @@ pub async fn send_message(
     let final_reply = tavern::compact_reply(&assistant_reply, prompt.reply_limit);
     let assistant_created_at = tavern::now_stamp_public();
     if !final_reply.is_empty() {
-        tavern::append_exchange(
+        let (user_message_id, assistant_message_id) = tavern::append_exchange(
             &app,
             &prompt,
             &user_message,
@@ -309,6 +309,22 @@ pub async fn send_message(
             user_created_at.as_deref(),
             &assistant_created_at,
         )?;
+        let memory_app = app.clone();
+        let memory_client = state.client.clone();
+        let memory_prompt = prompt.clone();
+        let memory_user_message = user_message.clone();
+        let memory_reply = final_reply.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = tavern::extract_memory_cards_after_exchange(
+                memory_app,
+                memory_client,
+                memory_prompt,
+                memory_user_message,
+                memory_reply,
+                vec![user_message_id, assistant_message_id],
+            )
+            .await;
+        });
         let score_app = app.clone();
         let score_client = state.client.clone();
         let score_prompt = prompt.clone();
@@ -359,6 +375,15 @@ pub async fn compact_chat_memory_command(
     chat_id: String,
 ) -> Result<tavern::ChatMemoryCompactResult, String> {
     tavern::compact_chat_memory(app, state.client.clone(), chat_id, true).await
+}
+
+#[tauri::command]
+pub async fn extract_memory_cards_for_chat(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    chat_id: String,
+) -> Result<tavern::MemoryExtractionSummary, String> {
+    tavern::extract_memory_cards_for_latest_chat(app, state.client.clone(), chat_id).await
 }
 
 #[tauri::command]

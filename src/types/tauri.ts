@@ -154,6 +154,59 @@ export interface RelationshipChangedPayload {
   source: string
 }
 
+export type MemoryCardScope = 'global' | 'character' | 'chat'
+export type MemoryCardType = 'preference' | 'boundary' | 'profile' | 'promise' | 'note'
+export type MemoryCardStatus = 'active' | 'pending' | 'archived'
+
+export interface MemoryCard {
+  id: string
+  scope: MemoryCardScope
+  characterId?: string | null
+  chatId?: string | null
+  type: MemoryCardType
+  content: string
+  importance: number
+  confidence: number
+  status: MemoryCardStatus
+  sourceMessageIds: string[]
+  createdAt: string
+  updatedAt: string
+  lastUsedAt: string
+}
+
+export interface MemoryChangedPayload {
+  cards: MemoryCard[]
+  reason: string
+  activeCardId?: string | null
+}
+
+export interface MemoryExtractionSummary {
+  created: MemoryCard[]
+  updated: MemoryCard[]
+  archived: MemoryCard[]
+  conflicts: MemoryCard[]
+}
+
+export type BuiltinAssetKind = 'character' | 'worldbook' | 'preset'
+
+export interface BuiltinAssetSummary {
+  id: string
+  name: string
+  kind: BuiltinAssetKind
+  tags: string[]
+  description: string
+  installed: boolean
+}
+
+export interface BuiltinInstallResult {
+  installedCharacters: number
+  installedWorldbooks: number
+  installedPresets: number
+  skipped: number
+  installed: BuiltinAssetSummary[]
+  skippedAssets: BuiltinAssetSummary[]
+}
+
 export interface ChatChunkPayload {
   content: string
 }
@@ -315,4 +368,6 @@ export interface PromptBuildResult {
   recentMessageCount: number
   bookmarkedMessageCount: number
   compactedMessageCount: number
+  memoryCardCount: number
+  memoryCardsUsed: MemoryCard[]
 }

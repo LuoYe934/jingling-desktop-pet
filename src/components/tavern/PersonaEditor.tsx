@@ -6,7 +6,7 @@ import { AvatarBadge } from '../AvatarBadge'
 
 interface PersonaEditorProps {
   personas: Persona[]
-  onSave: (persona: Persona) => Promise<void>
+  onSave: (persona: Persona) => Promise<Persona | undefined>
   onImport: (path: string) => Promise<void>
   onExport: (personaId: string, path: string) => Promise<void>
 }
@@ -24,15 +24,23 @@ function emptyPersona(): Persona {
 }
 
 export function PersonaEditor({ personas, onSave, onImport, onExport }: PersonaEditorProps) {
+  const [selectedId, setSelectedId] = useState('')
   const [draft, setDraft] = useState<Persona>(emptyPersona())
+  const [isCreating, setIsCreating] = useState(false)
   const [importPath, setImportPath] = useState('')
   const [exportPath, setExportPath] = useState('')
 
   useEffect(() => {
-    if (personas[0]) {
-      setDraft(personas[0])
+    if (isCreating) return
+    const next = personas.find((persona) => persona.id === selectedId) ?? personas[0]
+    if (next) {
+      setSelectedId(next.id)
+      setDraft(next)
+      return
     }
-  }, [personas])
+    setSelectedId('')
+    setDraft(emptyPersona())
+  }, [isCreating, personas, selectedId])
 
   function update<K extends keyof Persona>(key: K, value: Persona[K]) {
     setDraft((current) => ({ ...current, [key]: value }))
@@ -44,8 +52,23 @@ export function PersonaEditor({ personas, onSave, onImport, onExport }: PersonaE
     const nextDraft = { ...draft, avatar: path }
     setDraft(nextDraft)
     if (nextDraft.id) {
-      await onSave(nextDraft)
+      const saved = await onSave(nextDraft)
+      if (saved) setDraft(saved)
     }
+  }
+
+  function createPersona() {
+    setIsCreating(true)
+    setSelectedId('')
+    setDraft(emptyPersona())
+  }
+
+  async function saveDraft() {
+    const saved = await onSave(draft)
+    if (!saved) return
+    setIsCreating(false)
+    setSelectedId(saved.id)
+    setDraft(saved)
   }
 
   return (
@@ -53,7 +76,7 @@ export function PersonaEditor({ personas, onSave, onImport, onExport }: PersonaE
       <aside className="tavern-list">
         <div className="tavern-list__head">
           <strong>Persona</strong>
-          <button className="icon-button" title="新 Persona" type="button" onClick={() => setDraft(emptyPersona())}>
+          <button className="icon-button" title="新 Persona" type="button" onClick={createPersona}>
             <Plus size={15} />
           </button>
         </div>
@@ -62,7 +85,11 @@ export function PersonaEditor({ personas, onSave, onImport, onExport }: PersonaE
             key={persona.id}
             className={`tavern-list-item ${persona.id === draft.id ? 'tavern-list-item--active' : ''}`}
             type="button"
-            onClick={() => setDraft(persona)}
+            onClick={() => {
+              setIsCreating(false)
+              setSelectedId(persona.id)
+              setDraft(persona)
+            }}
           >
             <span>{persona.name}</span>
             <small>{persona.isDefault ? '默认身份' : '可选身份'}</small>
@@ -105,7 +132,7 @@ export function PersonaEditor({ personas, onSave, onImport, onExport }: PersonaE
           />
         </label>
         <div className="tavern-actions">
-          <button className="primary-button" type="button" onClick={() => void onSave(draft)}>
+          <button className="primary-button" type="button" onClick={() => void saveDraft()}>
             <Save size={16} />
             保存 Persona
           </button>

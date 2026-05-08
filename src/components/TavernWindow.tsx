@@ -2,11 +2,13 @@ import {
   BookOpen,
   Bot,
   Braces,
+  Brain,
   DatabaseZap,
   HeartHandshake,
   KeyRound,
   MessageSquareText,
   Minus,
+  PackageOpen,
   Save,
   Sparkles,
   UserRound,
@@ -24,17 +26,25 @@ import {
   importPersona,
   importPreset,
   importWorldbook,
+  installBuiltinAssets,
   listenToRelationshipChanges,
   listenToChatListChanges,
+  listenToMemoryChanges,
+  listBuiltinAssets,
   listCharacters,
   listChats,
+  listMemoryCards,
   listPersonas,
   listPresets,
   listProviders,
   listRelationships,
   listWorldbooks,
   resetRelationship,
+  archiveMemoryCard,
+  confirmMemoryCard,
+  deleteMemoryCard,
   saveCharacter,
+  saveMemoryCard,
   savePersona,
   savePreset,
   saveProviderKey,
@@ -43,8 +53,10 @@ import {
   startWindowDrag,
 } from '../lib/tauri'
 import type {
+  BuiltinAssetSummary,
   Persona,
   CharacterRelationship,
+  MemoryCard,
   PromptPreset,
   ProviderConfig,
   TavernCharacter,
@@ -53,13 +65,25 @@ import type {
 } from '../types/tauri'
 import { CharacterEditor } from './tavern/CharacterEditor'
 import { ChatLibrary } from './tavern/ChatLibrary'
+import { BuiltinLibraryPanel } from './tavern/BuiltinLibraryPanel'
 import { PersonaEditor } from './tavern/PersonaEditor'
 import { PresetEditor } from './tavern/PresetEditor'
 import { PromptPreview } from './tavern/PromptPreview'
 import { RelationshipPanel } from './tavern/RelationshipPanel'
+import { MemoryPanel } from './tavern/MemoryPanel'
 import { WorldbookEditor } from './tavern/WorldbookEditor'
 
-type TabId = 'characters' | 'personas' | 'chats' | 'worldbooks' | 'presets' | 'relationships' | 'preview' | 'extensions'
+type TabId =
+  | 'characters'
+  | 'personas'
+  | 'chats'
+  | 'worldbooks'
+  | 'presets'
+  | 'builtins'
+  | 'relationships'
+  | 'memory'
+  | 'preview'
+  | 'extensions'
 
 const tabs: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: 'characters', label: '角色', icon: Bot },
@@ -67,7 +91,9 @@ const tabs: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: 'chats', label: '聊天库', icon: MessageSquareText },
   { id: 'worldbooks', label: '世界书', icon: BookOpen },
   { id: 'presets', label: '预设', icon: DatabaseZap },
+  { id: 'builtins', label: '内容库', icon: PackageOpen },
   { id: 'relationships', label: '关系', icon: HeartHandshake },
+  { id: 'memory', label: '记忆', icon: Brain },
   { id: 'preview', label: 'Prompt', icon: Braces },
   { id: 'extensions', label: '扩展', icon: Sparkles },
 ]
@@ -93,8 +119,10 @@ export function TavernWindow() {
   const [chats, setChats] = useState<TavernChatListItem[]>([])
   const [worldbooks, setWorldbooks] = useState<Worldbook[]>([])
   const [presets, setPresets] = useState<PromptPreset[]>([])
+  const [builtinAssets, setBuiltinAssets] = useState<BuiltinAssetSummary[]>([])
   const [providers, setProviders] = useState<ProviderConfig[]>([])
   const [relationships, setRelationships] = useState<CharacterRelationship[]>([])
+  const [memoryCards, setMemoryCards] = useState<MemoryCard[]>([])
   const [status, setStatus] = useState('就绪')
 
   async function refresh() {
@@ -104,24 +132,30 @@ export function TavernWindow() {
       nextChats,
       nextWorldbooks,
       nextPresets,
+      nextBuiltinAssets,
       nextProviders,
       nextRelationships,
+      nextMemoryCards,
     ] = await Promise.all([
       listCharacters(),
       listPersonas(),
       listChats(),
       listWorldbooks(),
       listPresets(),
+      listBuiltinAssets(),
       listProviders(),
       listRelationships(),
+      listMemoryCards(),
     ])
     setCharacters(nextCharacters)
     setPersonas(nextPersonas)
     setChats(nextChats)
     setWorldbooks(nextWorldbooks)
     setPresets(nextPresets)
+    setBuiltinAssets(nextBuiltinAssets)
     setProviders(nextProviders)
     setRelationships(nextRelationships)
+    setMemoryCards(nextMemoryCards)
     return nextChats
   }
 
@@ -153,6 +187,14 @@ export function TavernWindow() {
     return () => cleanup()
   }, [])
 
+  useEffect(() => {
+    let cleanup = () => {}
+    listenToMemoryChanges((payload) => setMemoryCards(payload.cards)).then((unlisten) => {
+      cleanup = unlisten
+    })
+    return () => cleanup()
+  }, [])
+
   const activeTitle = useMemo(() => tabs.find((item) => item.id === tab)?.label || '酒馆', [tab])
 
   async function run<T>(work: () => Promise<T>, done = '已保存') {
@@ -165,6 +207,18 @@ export function TavernWindow() {
     }
   }
 
+  async function saveAndRefresh<T>(work: () => Promise<T>, done = '已保存') {
+    try {
+      const saved = await work()
+      await refresh()
+      setStatus(done)
+      return saved
+    } catch (error) {
+      setStatus(String(error))
+      return undefined
+    }
+  }
+
   async function savePresetAndRefresh(preset: PromptPreset) {
     try {
       const saved = await savePreset(preset)
@@ -174,6 +228,23 @@ export function TavernWindow() {
     } catch (error) {
       setStatus(String(error))
       return undefined
+    }
+  }
+
+  async function installBuiltinAndRefresh(ids: string[]) {
+    try {
+      const result = await installBuiltinAssets(ids)
+      await refresh()
+      if (!result.installed.length && result.skipped) {
+        setStatus(`这些内容已经安装过了，跳过 ${result.skipped} 个`)
+        return
+      }
+      const skipped = result.skipped ? `，跳过 ${result.skipped} 个已安装` : ''
+      setStatus(
+        `已导入 ${result.installedCharacters} 个角色 / ${result.installedWorldbooks} 本世界书 / ${result.installedPresets} 个预设${skipped}`,
+      )
+    } catch (error) {
+      setStatus(String(error))
     }
   }
 
@@ -245,7 +316,7 @@ export function TavernWindow() {
                 characters={characters}
                 presets={presets}
                 relationships={relationships}
-                onSave={(character) => run(() => saveCharacter(character), '角色已保存')}
+                onSave={(character) => saveAndRefresh(() => saveCharacter(character), '角色已保存')}
                 onImport={(path) => run(() => importCharacterCard(path), '角色卡已导入')}
                 onExport={(characterId, path) => run(() => exportCharacterCard(characterId, path), '角色卡已导出')}
               />
@@ -253,7 +324,7 @@ export function TavernWindow() {
             {tab === 'personas' && (
               <PersonaEditor
                 personas={personas}
-                onSave={(persona) => run(() => savePersona(persona), 'Persona 已保存')}
+                onSave={(persona) => saveAndRefresh(() => savePersona(persona), 'Persona 已保存')}
                 onImport={(path) => run(() => importPersona(path), 'Persona 已导入')}
                 onExport={(personaId, path) => run(() => exportPersona(personaId, path), 'Persona 已导出')}
               />
@@ -262,7 +333,7 @@ export function TavernWindow() {
             {tab === 'worldbooks' && (
               <WorldbookEditor
                 worldbooks={worldbooks}
-                onSave={(worldbook) => run(() => saveWorldbook(worldbook), '世界书已保存')}
+                onSave={(worldbook) => saveAndRefresh(() => saveWorldbook(worldbook), '世界书已保存')}
                 onImport={(path) => run(() => importWorldbook(path), '世界书已导入')}
                 onExport={(worldbookId, path) => run(() => exportWorldbook(worldbookId, path), '世界书已导出')}
               />
@@ -275,11 +346,25 @@ export function TavernWindow() {
                 onExport={(presetId, path) => run(() => exportPreset(presetId, path), '预设已导出')}
               />
             )}
+            {tab === 'builtins' && (
+              <BuiltinLibraryPanel assets={builtinAssets} onInstall={installBuiltinAndRefresh} />
+            )}
             {tab === 'relationships' && (
               <RelationshipPanel
                 characters={characters}
                 relationships={relationships}
                 onReset={(characterId) => run(() => resetRelationship(characterId), '关系已重置')}
+              />
+            )}
+            {tab === 'memory' && (
+              <MemoryPanel
+                cards={memoryCards}
+                characters={characters}
+                chats={chats}
+                onSave={(card) => saveAndRefresh(() => saveMemoryCard(card), '记忆已保存')}
+                onDelete={(cardId) => run(() => deleteMemoryCard(cardId), '记忆已删除')}
+                onArchive={(cardId) => run(() => archiveMemoryCard(cardId), '记忆已停用')}
+                onConfirm={(cardId) => run(() => confirmMemoryCard(cardId), '记忆已确认')}
               />
             )}
             {tab === 'preview' && <PromptPreview characters={characters} chats={chats} presets={presets} />}

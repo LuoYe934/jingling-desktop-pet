@@ -5,7 +5,7 @@ import { testWorldbookMatch } from '../../lib/tauri'
 
 interface WorldbookEditorProps {
   worldbooks: Worldbook[]
-  onSave: (worldbook: Worldbook) => Promise<void>
+  onSave: (worldbook: Worldbook) => Promise<Worldbook | undefined>
   onImport: (path: string) => Promise<void>
   onExport: (worldbookId: string, path: string) => Promise<void>
 }
@@ -34,7 +34,9 @@ function emptyWorldbook(): Worldbook {
 }
 
 export function WorldbookEditor({ worldbooks, onSave, onImport, onExport }: WorldbookEditorProps) {
+  const [selectedId, setSelectedId] = useState('')
   const [draft, setDraft] = useState<Worldbook>(emptyWorldbook())
+  const [isCreating, setIsCreating] = useState(false)
   const [entryIndex, setEntryIndex] = useState(0)
   const [keysText, setKeysText] = useState('')
   const [testText, setTestText] = useState('')
@@ -44,12 +46,21 @@ export function WorldbookEditor({ worldbooks, onSave, onImport, onExport }: Worl
   const entry = useMemo(() => draft.entries[entryIndex] || emptyEntry(), [draft.entries, entryIndex])
 
   useEffect(() => {
-    if (worldbooks[0]) {
-      setDraft(worldbooks[0])
+    if (isCreating) return
+    const next = worldbooks.find((worldbook) => worldbook.id === selectedId) ?? worldbooks[0]
+    if (next) {
+      setSelectedId(next.id)
+      setDraft(next)
       setEntryIndex(0)
-      setKeysText(worldbooks[0].entries[0]?.keys.join(', ') || '')
+      setKeysText(next.entries[0]?.keys.join(', ') || '')
+      return
     }
-  }, [worldbooks])
+    const empty = emptyWorldbook()
+    setSelectedId('')
+    setDraft(empty)
+    setEntryIndex(0)
+    setKeysText(empty.entries[0]?.keys.join(', ') || '')
+  }, [isCreating, selectedId, worldbooks])
 
   function updateEntry(next: WorldbookEntry) {
     setDraft((current) => ({
@@ -64,7 +75,7 @@ export function WorldbookEditor({ worldbooks, onSave, onImport, onExport }: Worl
   }
 
   async function save() {
-    await onSave({
+    const saved = await onSave({
       ...draft,
       entries: draft.entries.map((item, index) =>
         index === entryIndex
@@ -78,10 +89,26 @@ export function WorldbookEditor({ worldbooks, onSave, onImport, onExport }: Worl
           : item,
       ),
     })
+    if (!saved) return
+    const nextEntryIndex = Math.min(entryIndex, Math.max(0, saved.entries.length - 1))
+    setIsCreating(false)
+    setSelectedId(saved.id)
+    setDraft(saved)
+    setEntryIndex(nextEntryIndex)
+    setKeysText(saved.entries[nextEntryIndex]?.keys.join(', ') || '')
   }
 
   async function runMatch() {
     setMatches(await testWorldbookMatch(testText))
+  }
+
+  function createWorldbook() {
+    const empty = emptyWorldbook()
+    setIsCreating(true)
+    setSelectedId('')
+    setDraft(empty)
+    setEntryIndex(0)
+    setKeysText(empty.entries[0]?.keys.join(', ') || '')
   }
 
   return (
@@ -89,7 +116,7 @@ export function WorldbookEditor({ worldbooks, onSave, onImport, onExport }: Worl
       <aside className="tavern-list">
         <div className="tavern-list__head">
           <strong>世界书</strong>
-          <button className="icon-button" title="新世界书" type="button" onClick={() => setDraft(emptyWorldbook())}>
+          <button className="icon-button" title="新世界书" type="button" onClick={createWorldbook}>
             <Plus size={15} />
           </button>
         </div>
@@ -99,6 +126,8 @@ export function WorldbookEditor({ worldbooks, onSave, onImport, onExport }: Worl
             className={`tavern-list-item ${worldbook.id === draft.id ? 'tavern-list-item--active' : ''}`}
             type="button"
             onClick={() => {
+              setIsCreating(false)
+              setSelectedId(worldbook.id)
               setDraft(worldbook)
               setEntryIndex(0)
               setKeysText(worldbook.entries[0]?.keys.join(', ') || '')

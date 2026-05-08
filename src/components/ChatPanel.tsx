@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
-import { BookOpen, Plus, Send, Square } from 'lucide-react'
+import type { CSSProperties, FormEvent } from 'react'
+import { Ban, BookOpen, Brain, Mic, Plus, Send, Square } from 'lucide-react'
 import { usePetStore } from '../stores/petStore'
 import { formatChatOption, normalizeChatList } from '../lib/chatList'
 import { getDistinctSpeechVoices, pickSpeechVoice, speakLocalText, speakPiperText, stopSpeech } from '../lib/speech'
@@ -28,6 +28,7 @@ import {
   listProviders,
   loadChat,
   runningInTauri,
+  saveMemoryCard,
   sendMessage,
   showTavernWindow,
   updateChatSettings,
@@ -52,6 +53,46 @@ const welcomeMessage: ChatMessage = {
 }
 
 const lastChatIdStorageKey = 'jingling-last-chat-id'
+const chatMessageFontSizeStorageKey = 'jingling-chat-message-font-size'
+const defaultChatMessageFontSize = 14
+const minChatMessageFontSize = 9
+const maxChatMessageFontSize = 22
+
+type SpeechRecognitionLike = {
+  lang: string
+  continuous: boolean
+  interimResults: boolean
+  maxAlternatives: number
+  start: () => void
+  stop: () => void
+  abort: () => void
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null
+  onend: (() => void) | null
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
+
+type SpeechRecognitionEventLike = {
+  resultIndex: number
+  results: ArrayLike<{
+    isFinal: boolean
+    0?: {
+      transcript: string
+    }
+  }>
+}
+
+type SpeechRecognitionErrorEventLike = {
+  error?: string
+  message?: string
+}
+
+type SpeechRecognitionWindow = Window &
+  typeof globalThis & {
+    SpeechRecognition?: SpeechRecognitionConstructor
+    webkitSpeechRecognition?: SpeechRecognitionConstructor
+  }
 
 function makeId() {
   return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
@@ -72,6 +113,41 @@ function saveLastChatId(chatId: string) {
   } catch {
     // Local storage can be unavailable in locked-down WebViews.
   }
+}
+
+function clampChatMessageFontSize(value: number) {
+  return Math.min(maxChatMessageFontSize, Math.max(minChatMessageFontSize, value))
+}
+
+function readChatMessageFontSize() {
+  try {
+    const stored = Number(window.localStorage.getItem(chatMessageFontSizeStorageKey))
+    if (Number.isFinite(stored)) return clampChatMessageFontSize(stored)
+  } catch {
+    // Local storage can be unavailable in locked-down WebViews.
+  }
+  return defaultChatMessageFontSize
+}
+
+function saveChatMessageFontSize(size: number) {
+  try {
+    window.localStorage.setItem(chatMessageFontSizeStorageKey, String(size))
+  } catch {
+    // Local storage can be unavailable in locked-down WebViews.
+  }
+}
+
+function appendSpeechText(current: string, addition: string) {
+  const text = addition.trim()
+  if (!text) return current
+  const trimmedCurrent = current.trimEnd()
+  if (!trimmedCurrent) return text
+  return `${trimmedCurrent} ${text}`
+}
+
+function getSpeechRecognitionConstructor() {
+  const speechWindow = window as SpeechRecognitionWindow
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition
 }
 
 function clearLastChatId() {
@@ -107,6 +183,7 @@ function enabledWithActive<T extends { id: string; enabled: boolean }>(items: T[
 
 export function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([welcomeMessage])
+  const [messageFontSize, setMessageFontSize] = useState(readChatMessageFontSize)
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [isBootstrapping, setIsBootstrapping] = useState(true)
@@ -121,7 +198,14 @@ export function ChatPanel() {
   const [activePersonaId, setActivePersonaId] = useState('')
   const [activePresetId, setActivePresetId] = useState('')
   const [activeProviderId, setActiveProviderId] = useState('')
+  const [isListening, setIsListening] = useState(false)
+  const [speechSupported, setSpeechSupported] = useState(false)
+  const messagesRef = useRef<HTMLDivElement | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
+  const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const speechStartingRef = useRef(false)
+  const ctrlPressedRef = useRef(false)
+  const lastPointerRef = useRef({ x: -1, y: -1 })
   const activeChatIdRef = useRef('')
   const activeCharacterIdRef = useRef('')
   const activePersonaIdRef = useRef('')
@@ -272,6 +356,15 @@ export function ChatPanel() {
   useEffect(() => {
     activePresetIdRef.current = activePresetId
   }, [activePresetId])
+
+  useEffect(() => {
+    setSpeechSupported(Boolean(getSpeechRecognitionConstructor()))
+    return () => {
+      speechRecognitionRef.current?.abort()
+      speechRecognitionRef.current = null
+      speechStartingRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     const wasEnabled = wasTtsEnabledRef.current
@@ -541,10 +634,86 @@ export function ChatPanel() {
     bottomRef.current?.scrollIntoView({ block: 'end' })
   }, [messages])
 
+  useEffect(() => {
+    const messagesElement = messagesRef.current
+    if (!messagesElement) return
+
+    const isInsideMessages = (event: WheelEvent) => {
+      const rect = messagesElement.getBoundingClientRect()
+      const fallbackPoint = lastPointerRef.current
+      const useFallbackPoint = event.clientX === 0 && event.clientY === 0 && fallbackPoint.x >= 0 && fallbackPoint.y >= 0
+      const x = useFallbackPoint ? fallbackPoint.x : event.clientX
+      const y = useFallbackPoint ? fallbackPoint.y : event.clientY
+      return (
+        x >= rect.left &&
+        x <= rect.right &&
+        y >= rect.top &&
+        y <= rect.bottom
+      )
+    }
+
+    const handlePointerMove = (event: MouseEvent | PointerEvent) => {
+      lastPointerRef.current = { x: event.clientX, y: event.clientY }
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Control') ctrlPressedRef.current = true
+    }
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Control') ctrlPressedRef.current = false
+    }
+
+    const handleBlur = () => {
+      ctrlPressedRef.current = false
+    }
+
+    const handleNativeWheel = (event: Event) => {
+      const wheelEvent = event as WheelEvent & { detail?: number; wheelDelta?: number }
+      if (!wheelEvent.ctrlKey && !ctrlPressedRef.current) return
+      if (!isInsideMessages(wheelEvent)) return
+      event.preventDefault()
+      event.stopPropagation()
+      const delta = wheelEvent.deltaY || -(wheelEvent.wheelDelta ?? 0) || wheelEvent.detail || 0
+      setMessageFontSize((current) => {
+        const next = clampChatMessageFontSize(current + (delta > 0 ? -1 : 1))
+        if (next !== current) saveChatMessageFontSize(next)
+        return next
+      })
+    }
+
+    window.addEventListener('pointermove', handlePointerMove, { capture: true })
+    window.addEventListener('mousemove', handlePointerMove, { capture: true })
+    window.addEventListener('keydown', handleKeyDown, { capture: true })
+    window.addEventListener('keyup', handleKeyUp, { capture: true })
+    window.addEventListener('blur', handleBlur)
+    window.addEventListener('wheel', handleNativeWheel, { capture: true, passive: false })
+    window.addEventListener('mousewheel', handleNativeWheel, { capture: true, passive: false })
+    window.addEventListener('DOMMouseScroll', handleNativeWheel, { capture: true, passive: false })
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove, { capture: true })
+      window.removeEventListener('mousemove', handlePointerMove, { capture: true })
+      window.removeEventListener('keydown', handleKeyDown, { capture: true })
+      window.removeEventListener('keyup', handleKeyUp, { capture: true })
+      window.removeEventListener('blur', handleBlur)
+      window.removeEventListener('wheel', handleNativeWheel, { capture: true })
+      window.removeEventListener('mousewheel', handleNativeWheel, { capture: true })
+      window.removeEventListener('DOMMouseScroll', handleNativeWheel, { capture: true })
+    }
+  }, [])
+
   const canSend = useMemo(
     () => input.trim().length > 0 && !isStreaming && !isBootstrapping && (Boolean(activeChatId) || chats.length === 0),
     [activeChatId, chats.length, input, isBootstrapping, isStreaming],
   )
+  const canUseVoiceInput = speechSupported && !isStreaming && !isBootstrapping
+  const voiceButtonTitle = !speechSupported
+    ? '当前环境不支持内置语音输入，可使用系统/豆包输入法'
+    : isStreaming
+      ? '回复中不能语音输入'
+      : isListening
+        ? '停止语音输入'
+        : '开始语音输入'
   const activePreset = useMemo(
     () => presets.find((preset) => preset.id === activePresetId) ?? presets.find((preset) => preset.enabled) ?? presets[0],
     [activePresetId, presets],
@@ -583,6 +752,11 @@ export function ChatPanel() {
     [activeCharacter, activePersona, activePreset, input, messages],
   )
   const promptBudget = activePreset?.maxInputChars ?? 8000
+  const messageFontStyle = {
+    '--chat-message-font-size': `${messageFontSize}px`,
+    '--chat-message-meta-font-size': `${clampChatMessageFontSize(messageFontSize - 3)}px`,
+    '--chat-message-system-font-size': `${clampChatMessageFontSize(messageFontSize - 2)}px`,
+  } as CSSProperties
 
   function speakerForMessage(message: ChatMessage) {
     if (message.role === 'user') {
@@ -605,7 +779,86 @@ export function ChatPanel() {
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    if (isStreaming) {
+      await stopCurrentResponse()
+      return
+    }
     await sendCurrent()
+  }
+
+  async function stopCurrentResponse() {
+    if (!isStreaming) return
+    await cancelMessage().catch(() => undefined)
+    setIsStreaming(false)
+    setMotion('idle')
+  }
+
+  function stopVoiceInput() {
+    speechStartingRef.current = false
+    speechRecognitionRef.current?.stop()
+    setIsListening(false)
+  }
+
+  function startVoiceInput() {
+    if (isStreaming || isBootstrapping) return
+    const SpeechRecognition = getSpeechRecognitionConstructor()
+    if (!SpeechRecognition) {
+      setSpeechSupported(false)
+      setRelationshipNotice('当前环境不支持内置语音输入，可使用系统/豆包输入法')
+      window.setTimeout(() => setRelationshipNotice(''), 3200)
+      return
+    }
+
+    speechRecognitionRef.current?.abort()
+    const recognition = new SpeechRecognition()
+    speechRecognitionRef.current = recognition
+    speechStartingRef.current = true
+    recognition.lang = 'zh-CN'
+    recognition.continuous = false
+    recognition.interimResults = true
+    recognition.maxAlternatives = 1
+    recognition.onresult = (event) => {
+      let finalText = ''
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index]
+        const transcript = result[0]?.transcript ?? ''
+        if (result.isFinal) finalText += transcript
+      }
+      if (finalText.trim()) {
+        setInput((current) => appendSpeechText(current, finalText))
+      }
+    }
+    recognition.onerror = (event) => {
+      const reason = event.message || event.error || '语音输入失败'
+      setRelationshipNotice(reason === 'not-allowed' ? '麦克风权限被拒绝' : `语音输入失败：${reason}`)
+      window.setTimeout(() => setRelationshipNotice(''), 3000)
+    }
+    recognition.onend = () => {
+      speechStartingRef.current = false
+      setIsListening(false)
+      if (speechRecognitionRef.current === recognition) {
+        speechRecognitionRef.current = null
+      }
+    }
+
+    try {
+      recognition.start()
+      setIsListening(true)
+    } catch (error) {
+      speechStartingRef.current = false
+      setIsListening(false)
+      speechRecognitionRef.current = null
+      setRelationshipNotice(`语音输入启动失败：${String(error)}`)
+      window.setTimeout(() => setRelationshipNotice(''), 3000)
+    }
+  }
+
+  function toggleVoiceInput() {
+    if (isListening || speechStartingRef.current) {
+      stopVoiceInput()
+      return
+    }
+    startVoiceInput()
   }
 
   async function sendCurrent() {
@@ -736,6 +989,32 @@ export function ChatPanel() {
     setChats(normalizeChatList(await listChats()))
   }
 
+  async function markMessageMemory(message: ChatMessage, archived = false) {
+    const content = message.content.trim()
+    if (!content || message.streaming) return
+    try {
+      await saveMemoryCard({
+        id: '',
+        scope: activeChatId ? 'chat' : 'character',
+        characterId: activeCharacterId || null,
+        chatId: activeChatId || null,
+        type: 'note',
+        content: archived ? `不要把这句作为长期记忆：${content}` : content,
+        importance: archived ? 1 : 6,
+        confidence: 1,
+        status: archived ? 'archived' : 'active',
+        sourceMessageIds: [message.id],
+        createdAt: '',
+        updatedAt: '',
+        lastUsedAt: '',
+      })
+      setRelationshipNotice(archived ? '这句已标记为不自动记忆' : '已记住这句')
+    } catch (error) {
+      setRelationshipNotice(String(error))
+    }
+    window.setTimeout(() => setRelationshipNotice(''), 2200)
+  }
+
   return (
     <>
       <div className="chat-context-bar" data-no-window-drag="true">
@@ -794,7 +1073,12 @@ export function ChatPanel() {
         </button>
       </div>
 
-      <div className={`messages ${showTokenStats ? 'messages--token-stats' : ''}`} aria-live="polite">
+      <div
+        ref={messagesRef}
+        className={`messages ${showTokenStats ? 'messages--token-stats' : ''}`}
+        style={messageFontStyle}
+        aria-live="polite"
+      >
         {messages.map((message) => {
           const speaker = speakerForMessage(message)
           const metaLabel = message.content.trim() ? messageMetaLabel(message, showTokenStats, showMessageTimes) : ''
@@ -810,6 +1094,16 @@ export function ChatPanel() {
                 {message.content}
                 {message.streaming && <span className="caret" />}
                 {metaLabel && <small className="message-token-count">{metaLabel}</small>}
+                {message.role !== 'system' && message.content.trim() && !message.streaming && (
+                  <div className="message-memory-actions" data-no-window-drag="true">
+                    <button type="button" title="记住这句" onClick={() => void markMessageMemory(message)}>
+                      <Brain size={12} />
+                    </button>
+                    <button type="button" title="不要记这句" onClick={() => void markMessageMemory(message, true)}>
+                      <Ban size={12} />
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )
@@ -830,30 +1124,27 @@ export function ChatPanel() {
           <textarea
             value={input}
             maxLength={1200}
-            placeholder="和鲸灵说点什么..."
+            placeholder={isListening ? '正在听…' : '和鲸灵说点什么...'}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
-                void sendCurrent()
+                if (!isStreaming) void sendCurrent()
               }
             }}
           />
           <div className="send-stack">
-            <button className="primary-button" type="submit" disabled={!canSend} title="发送">
-              <Send size={17} />
+            <button className="primary-button" type="submit" disabled={isStreaming ? false : !canSend} title={isStreaming ? '停止生成' : '发送'}>
+              {isStreaming ? <Square size={15} /> : <Send size={17} />}
             </button>
             <button
-              className="secondary-button"
+              className={isListening ? 'secondary-button voice-button--on' : 'secondary-button'}
               type="button"
-              disabled={!isStreaming}
-              title="停止"
-              onClick={() => {
-                void cancelMessage()
-                setIsStreaming(false)
-              }}
+              disabled={!canUseVoiceInput && !isListening}
+              title={voiceButtonTitle}
+              onClick={toggleVoiceInput}
             >
-              <Square size={14} />
+              <Mic size={15} />
             </button>
           </div>
         </form>
