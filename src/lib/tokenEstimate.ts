@@ -64,7 +64,7 @@ export function estimateMessagesTokens(messages: Array<Pick<LlmMessage, 'role' |
 
 export function estimatePromptTokens({ messages, input, preset, character, persona }: PromptEstimateInput) {
   const recentMessages = messages
-    .filter((message) => message.role !== 'system' && message.content.trim())
+    .filter((message) => !message.compacted && message.role !== 'system' && message.content.trim())
     .slice(-(preset?.contextMessages ?? 24))
 
   const systemParts = [

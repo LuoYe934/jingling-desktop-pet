@@ -233,6 +233,82 @@
   text-overflow: ellipsis;
 }
 
+.relationship-line {
+  max-width: min(280px, 58vw);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.affection-heart-meter {
+  --heart-fill: 0%;
+  position: relative;
+  width: 17px;
+  height: 17px;
+  flex: none;
+  color: rgba(101, 119, 125, 0.86);
+}
+
+.affection-heart-meter svg {
+  position: absolute;
+  inset: 0;
+}
+
+.affection-heart-meter__outline {
+  color: rgba(101, 119, 125, 0.9);
+  fill: rgba(255, 255, 255, 0.74);
+}
+
+.affection-heart-meter__fill {
+  color: #e75d68;
+  fill: #e75d68;
+  clip-path: inset(calc(100% - var(--heart-fill)) 0 0 0);
+  transition: clip-path 0.28s ease;
+}
+
+.relationship-line__text {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relationship-line__text strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.relationship-line__text span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.relationship-notice {
+  display: block;
+  margin-top: 3px;
+  max-width: 260px;
+  color: #8d4a42;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.current-clock {
+  display: block;
+  margin-top: 3px;
+  color: var(--sea-dark);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 .window-actions {
   display: flex;
   gap: 6px;
@@ -284,6 +360,11 @@
   display: flex;
   align-items: flex-end;
   gap: 8px;
+}
+
+.message-row--compacted .message {
+  outline: 1px dashed rgba(126, 108, 59, 0.32);
+  opacity: 0.86;
 }
 
 .message-row--user {
@@ -834,6 +915,19 @@
   margin-bottom: 10px;
 }
 
+.tavern-grid--library .tavern-editor {
+  padding: 12px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.chat-library-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .tavern-list-item {
   width: 100%;
   min-height: 58px;
@@ -870,6 +964,81 @@
   white-space: nowrap;
 }
 
+.character-list-item {
+  grid-template-columns: minmax(0, 1fr) 54px;
+  align-items: center;
+}
+
+.character-list-item__text {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.character-affection-badge {
+  width: 46px;
+  min-height: 42px;
+  justify-self: end;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-content: center;
+  justify-content: center;
+  gap: 1px 3px;
+  border: 1px solid rgba(67, 107, 116, 0.18);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.character-affection-badge svg {
+  align-self: center;
+  color: currentColor;
+}
+
+.character-affection-badge strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.character-affection-badge small {
+  grid-column: 1 / -1;
+  max-width: 40px;
+  color: currentColor;
+  font-size: 10px;
+  line-height: 1.1;
+  text-align: center;
+}
+
+.character-affection-badge--trusted {
+  border-color: rgba(47, 132, 104, 0.24);
+  background: rgba(224, 248, 234, 0.82);
+  color: #2f8468;
+}
+
+.character-affection-badge--close {
+  border-color: rgba(62, 137, 167, 0.24);
+  background: rgba(225, 246, 250, 0.84);
+  color: #3e89a7;
+}
+
+.character-affection-badge--neutral {
+  color: #5f7479;
+}
+
+.character-affection-badge--distant {
+  border-color: rgba(137, 118, 77, 0.24);
+  background: rgba(250, 244, 225, 0.84);
+  color: #89764d;
+}
+
+.character-affection-badge--guarded {
+  border-color: rgba(154, 80, 80, 0.24);
+  background: rgba(252, 232, 232, 0.82);
+  color: #9a5050;
+}
+
 .tavern-editor,
 .prompt-preview,
 .extensions-panel {
@@ -878,6 +1047,29 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.relationship-prompt-editor {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(61, 103, 111, 0.14);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(241, 249, 248, 0.62);
+}
+
+.relationship-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.relationship-stage-grid textarea {
+  min-height: 96px;
+}
+
+.relationship-layout {
+  grid-template-columns: 190px minmax(0, 1fr);
 }
 
 .preset-budget-strip {
@@ -1048,6 +1240,41 @@
   overflow: auto;
 }
 
+.chat-memory-panel {
+  border: 1px solid rgba(61, 103, 111, 0.14);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(247, 252, 250, 0.82);
+}
+
+.chat-memory-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.chat-memory-panel__head div {
+  display: grid;
+  gap: 2px;
+}
+
+.chat-memory-panel__head strong {
+  color: var(--sea-dark);
+  font-size: 13px;
+}
+
+.chat-memory-panel__head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chat-summary-textarea {
+  width: 100%;
+  min-height: 116px !important;
+}
+
 .transcript-message {
   position: relative;
   border: 1px solid rgba(61, 103, 111, 0.14);
@@ -1056,9 +1283,23 @@
   background: rgba(255, 255, 255, 0.78);
 }
 
+.transcript-message--compacted {
+  border-style: dashed;
+  background: rgba(246, 246, 241, 0.82);
+}
+
 .transcript-message strong {
   color: var(--sea-dark);
   font-size: 12px;
+}
+
+.transcript-message__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  color: #7d6c3b;
+  font-size: 11px;
 }
 
 .transcript-message p {
@@ -1126,6 +1367,159 @@
 .metric-grid span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.relationship-detail h3 {
+  margin: 0;
+}
+
+.relationship-detail p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.relationship-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.relationship-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.relationship-head .secondary-button {
+  flex: none;
+  min-height: 34px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.relationship-unlocks,
+.relationship-events,
+.relationship-config {
+  display: grid;
+  gap: 10px;
+}
+
+.relationship-subtle {
+  margin: -4px 0 2px !important;
+}
+
+.relationship-rules {
+  border: 1px solid rgba(61, 103, 111, 0.14);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(241, 249, 248, 0.68);
+}
+
+.relationship-rules summary {
+  color: var(--sea-dark);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.relationship-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.relationship-edit-list {
+  display: grid;
+  gap: 10px;
+}
+
+.relationship-edit-card {
+  display: grid;
+  grid-template-columns: minmax(86px, auto) minmax(120px, 1fr) minmax(70px, 0.45fr) auto;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid rgba(61, 103, 111, 0.14);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.relationship-edit-card--holiday {
+  grid-template-columns: minmax(80px, 0.9fr) minmax(110px, 1.1fr) repeat(2, minmax(52px, 0.55fr));
+}
+
+.relationship-wide-field {
+  grid-column: 1 / -1;
+}
+
+.relationship-edit-card textarea {
+  min-height: 58px;
+}
+
+.unlock-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 8px;
+}
+
+.unlock-item {
+  min-height: 46px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  border: 1px solid rgba(61, 103, 111, 0.14);
+  border-radius: 12px;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+}
+
+.unlock-item em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+}
+
+.unlock-item--on {
+  color: var(--sea-dark);
+  border-color: rgba(75, 159, 178, 0.28);
+  background: rgba(235, 249, 247, 0.9);
+}
+
+.unlock-item--on em {
+  color: var(--sea-dark);
+}
+
+.relationship-event {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(61, 103, 111, 0.14);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.relationship-event strong {
+  color: var(--sea-dark);
+  font-size: 12px;
+}
+
+.relationship-event span,
+.relationship-event small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.relationship-event p {
+  margin: 2px 0 0;
+  color: var(--ink);
+  line-height: 1.45;
 }
 
 .prompt-message {

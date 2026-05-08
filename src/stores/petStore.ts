@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AppSettings, TtsSettings } from '../types/tauri'
+import type { AppSettings, CharacterRelationship, TtsSettings } from '../types/tauri'
 
 export type PetMotion = 'idle' | 'hover' | 'tap' | 'rightTap' | 'drag' | 'thinking' | 'happy' | 'error'
 
@@ -7,11 +7,17 @@ interface PetStore {
   motion: PetMotion
   settings: AppSettings
   ttsSettings: TtsSettings
+  activeRelationship: CharacterRelationship | null
+  relationshipNotice: string
+  showMessageTimes: boolean
   showTokenStats: boolean
   hasApiKey: boolean
   setMotion: (motion: PetMotion) => void
   setSettings: (settings: AppSettings) => void
   setTtsSettings: (settings: TtsSettings) => void
+  setActiveRelationship: (relationship: CharacterRelationship | null) => void
+  setRelationshipNotice: (notice: string) => void
+  setShowMessageTimes: (showMessageTimes: boolean) => void
   setShowTokenStats: (showTokenStats: boolean) => void
   setHasApiKey: (hasApiKey: boolean) => void
 }
@@ -70,6 +76,23 @@ function saveShowTokenStats(enabled: boolean) {
   }
 }
 
+function loadShowMessageTimes() {
+  try {
+    const raw = window.localStorage.getItem('jingling-show-message-times')
+    return raw === null ? true : raw === 'true'
+  } catch {
+    return true
+  }
+}
+
+function saveShowMessageTimes(enabled: boolean) {
+  try {
+    window.localStorage.setItem('jingling-show-message-times', String(enabled))
+  } catch {
+    // Local storage can be unavailable in locked-down WebViews.
+  }
+}
+
 export const usePetStore = create<PetStore>((set) => ({
   motion: 'idle',
   settings: {
@@ -79,6 +102,9 @@ export const usePetStore = create<PetStore>((set) => ({
     replyLimit: 100,
   },
   ttsSettings: loadTtsSettings(),
+  activeRelationship: null,
+  relationshipNotice: '',
+  showMessageTimes: loadShowMessageTimes(),
   showTokenStats: loadShowTokenStats(),
   hasApiKey: false,
   setMotion: (motion) => set({ motion }),
@@ -86,6 +112,12 @@ export const usePetStore = create<PetStore>((set) => ({
   setTtsSettings: (ttsSettings) => {
     saveTtsSettings(ttsSettings)
     set({ ttsSettings })
+  },
+  setActiveRelationship: (activeRelationship) => set({ activeRelationship }),
+  setRelationshipNotice: (relationshipNotice) => set({ relationshipNotice }),
+  setShowMessageTimes: (showMessageTimes) => {
+    saveShowMessageTimes(showMessageTimes)
+    set({ showMessageTimes })
   },
   setShowTokenStats: (showTokenStats) => {
     saveShowTokenStats(showTokenStats)

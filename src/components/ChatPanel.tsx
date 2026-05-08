@@ -4,12 +4,14 @@ import { BookOpen, Plus, Send, Square } from 'lucide-react'
 import { usePetStore } from '../stores/petStore'
 import { formatChatOption, normalizeChatList } from '../lib/chatList'
 import { getDistinctSpeechVoices, pickSpeechVoice, speakLocalText, speakPiperText, stopSpeech } from '../lib/speech'
+import { formatLocalDateTime, nowStamp } from '../lib/time'
 import { estimatePromptTokens, estimateTokenCount } from '../lib/tokenEstimate'
 import {
   cancelMessage,
   clearChatMessages,
   clearMemory,
   createChat,
+  getRelationship,
   getSettings,
   hasApiKey,
   listenToCharacterChanges,
@@ -17,6 +19,7 @@ import {
   listenToChatEvents,
   listenToPersonaChanges,
   listenToPresetChanges,
+  listenToRelationshipChanges,
   listenToSettingsChanges,
   listCharacters,
   listChats,
@@ -84,6 +87,15 @@ function tokenLabel(message: ChatMessage) {
   return `${message.tokenSource === 'api' ? '' : '约 '}${tokens} tokens`
 }
 
+function messageMetaLabel(message: ChatMessage, showTokenStats: boolean, showMessageTimes: boolean) {
+  const parts = []
+  const time = message.createdAt ? formatLocalDateTime(message.createdAt) : ''
+  if (showMessageTimes && time) parts.push(time)
+  if (showTokenStats) parts.push(tokenLabel(message))
+  if (message.compacted) parts.push('已纳入长期摘要')
+  return parts.join(' · ')
+}
+
 function enabledWithActive<T extends { id: string; enabled: boolean }>(items: T[], activeId: string) {
   const enabled = items.filter((item) => item.enabled)
   const active = items.find((item) => item.id === activeId)
@@ -121,10 +133,13 @@ export function ChatPanel() {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([])
   const settings = usePetStore((state) => state.settings)
   const ttsSettings = usePetStore((state) => state.ttsSettings)
+  const showMessageTimes = usePetStore((state) => state.showMessageTimes)
   const showTokenStats = usePetStore((state) => state.showTokenStats)
   const setSettings = usePetStore((state) => state.setSettings)
   const setTtsSettings = usePetStore((state) => state.setTtsSettings)
   const setMotion = usePetStore((state) => state.setMotion)
+  const setActiveRelationship = usePetStore((state) => state.setActiveRelationship)
+  const setRelationshipNotice = usePetStore((state) => state.setRelationshipNotice)
   const setHasApiKey = usePetStore((state) => state.setHasApiKey)
 
   function syncChatState(
@@ -147,6 +162,9 @@ export function ChatPanel() {
             role: message.role,
             content: message.content,
             bookmarked: message.bookmarked,
+            compacted: message.compacted,
+            compactedAt: message.compactedAt,
+            summaryBatchId: message.summaryBatchId,
             createdAt: message.createdAt,
           }))
         : [welcomeMessage],
@@ -238,7 +256,14 @@ export function ChatPanel() {
 
   useEffect(() => {
     activeCharacterIdRef.current = activeCharacterId
-  }, [activeCharacterId])
+    if (!activeCharacterId) {
+      setActiveRelationship(null)
+      return
+    }
+    getRelationship(activeCharacterId)
+      .then(setActiveRelationship)
+      .catch(() => setActiveRelationship(null))
+  }, [activeCharacterId, setActiveRelationship])
 
   useEffect(() => {
     activePersonaIdRef.current = activePersonaId
@@ -414,6 +439,34 @@ export function ChatPanel() {
   useEffect(() => {
     let disposed = false
     let cleanup: (() => void) | undefined
+    listenToRelationshipChanges(({ relationship, delta, moodDelta, reason }) => {
+      if (relationship.characterId !== activeCharacterIdRef.current) return
+      setActiveRelationship(relationship)
+      if (delta !== 0 || moodDelta !== 0) {
+        const affectionPart = delta !== 0 ? `好感 ${delta > 0 ? '+' : ''}${delta}` : ''
+        const moodPart = moodDelta !== 0 ? `心情 ${moodDelta > 0 ? '+' : ''}${moodDelta}` : ''
+        setRelationshipNotice([affectionPart, moodPart, reason].filter(Boolean).join(' · '))
+        window.setTimeout(() => setRelationshipNotice(''), 3600)
+      } else if (reason) {
+        setRelationshipNotice(reason)
+        window.setTimeout(() => setRelationshipNotice(''), 2600)
+      }
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten()
+        return
+      }
+      cleanup = unlisten
+    }).catch(() => undefined)
+    return () => {
+      disposed = true
+      cleanup?.()
+    }
+  }, [setActiveRelationship, setRelationshipNotice])
+
+  useEffect(() => {
+    let disposed = false
+    let cleanup: (() => void) | undefined
     listenToChatEvents({
       onChunk: ({ content }) => {
         setIsStreaming(true)
@@ -428,7 +481,7 @@ export function ChatPanel() {
           return [...next, { id: makeId(), role: 'assistant', content, streaming: true }]
         })
       },
-      onDone: ({ content, chatId, completionTokens }) => {
+      onDone: ({ content, chatId, completionTokens, assistantCreatedAt }) => {
         setIsStreaming(false)
         setMotion('happy')
         if (chatId) {
@@ -451,11 +504,12 @@ export function ChatPanel() {
               streaming: false,
               tokenCount: replyTokens,
               tokenSource,
+              createdAt: assistantCreatedAt,
             }
             return next
           }
           if (content) {
-            return [...next, { id: makeId(), role: 'assistant', content, tokenCount: replyTokens, tokenSource }]
+            return [...next, { id: makeId(), role: 'assistant', content, tokenCount: replyTokens, tokenSource, createdAt: assistantCreatedAt }]
           }
           return next
         })
@@ -565,9 +619,17 @@ export function ChatPanel() {
     setInput('')
     setIsStreaming(true)
     setMotion('thinking')
+    const userCreatedAt = nowStamp()
     setMessages((current) => [
       ...current,
-      { id: makeId(), role: 'user', content, tokenCount: estimateTokenCount(content), tokenSource: 'estimate' },
+      {
+        id: makeId(),
+        role: 'user',
+        content,
+        tokenCount: estimateTokenCount(content),
+        tokenSource: 'estimate',
+        createdAt: userCreatedAt,
+      },
       { id: makeId(), role: 'assistant', content: '', streaming: true },
     ])
 
@@ -578,6 +640,8 @@ export function ChatPanel() {
         characterId: activeCharacterId || undefined,
         presetId: activePresetId || undefined,
         providerId: activeProviderId || undefined,
+        clientNow: `${formatLocalDateTime(userCreatedAt)} ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+        userCreatedAt,
       })
       if (!runningInTauri() && typeof previewReply === 'string') {
         setMessages((current) => {
@@ -590,6 +654,7 @@ export function ChatPanel() {
               streaming: false,
               tokenCount: estimateTokenCount(previewReply),
               tokenSource: 'estimate',
+              createdAt: nowStamp(),
             }
             return next
           }
@@ -601,6 +666,7 @@ export function ChatPanel() {
               content: previewReply,
               tokenCount: estimateTokenCount(previewReply),
               tokenSource: 'estimate',
+              createdAt: nowStamp(),
             },
           ]
         })
@@ -731,17 +797,19 @@ export function ChatPanel() {
       <div className={`messages ${showTokenStats ? 'messages--token-stats' : ''}`} aria-live="polite">
         {messages.map((message) => {
           const speaker = speakerForMessage(message)
+          const metaLabel = message.content.trim() ? messageMetaLabel(message, showTokenStats, showMessageTimes) : ''
           return (
-            <div key={message.id} className={`message-row message-row--${message.role}`}>
+            <div
+              key={message.id}
+              className={`message-row message-row--${message.role} ${message.compacted ? 'message-row--compacted' : ''}`}
+            >
               {message.role !== 'system' && (
                 <AvatarBadge name={speaker.name} avatar={speaker.avatar} className="message-avatar" />
               )}
               <div className={`message message--${message.role}`}>
                 {message.content}
                 {message.streaming && <span className="caret" />}
-                {showTokenStats && message.content.trim() && (
-                  <small className="message-token-count">{tokenLabel(message)}</small>
-                )}
+                {metaLabel && <small className="message-token-count">{metaLabel}</small>}
               </div>
             </div>
           )

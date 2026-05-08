@@ -6,7 +6,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -17,7 +17,20 @@ const DEFAULT_PROVIDER_ID: &str = "deepseek";
 const DEFAULT_MODEL: &str = "deepseek-v4-flash";
 const DEEPSEEK_URL: &str = "https://api.deepseek.com/chat/completions";
 const SERVICE_NAME: &str = "jingling-desktop-pet";
+const SUMMARY_PROMPT_LIMIT: usize = 2400;
+const SUMMARY_STORE_LIMIT: usize = 6000;
+const BOOKMARK_PROMPT_LIMIT: usize = 1200;
+const SUMMARY_OUTPUT_TOKENS: u16 = 1200;
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+const SUMMARY_SECTION_TITLES: [&str; 6] = [
+    "用户身份/偏好",
+    "和角色的重要关系",
+    "已发生的重要事件",
+    "未完成的话题/承诺",
+    "用户情绪倾向",
+    "角色需要记住的称呼、禁忌、习惯",
+];
 
 fn default_enabled() -> bool {
     true
@@ -31,7 +44,40 @@ struct TavernPaths {
     chats: PathBuf,
     worldbooks: PathBuf,
     presets: PathBuf,
+    relationships: PathBuf,
     avatars: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RelationshipStage {
+    Guarded,
+    Distant,
+    Neutral,
+    Close,
+    Trusted,
+}
+
+impl Default for RelationshipStage {
+    fn default() -> Self {
+        Self::Neutral
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationshipStagePrompts {
+    pub guarded: String,
+    pub distant: String,
+    pub neutral: String,
+    pub close: String,
+    pub trusted: String,
+}
+
+impl Default for RelationshipStagePrompts {
+    fn default() -> Self {
+        default_relationship_stage_prompts()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -50,8 +96,145 @@ pub struct TavernCharacter {
     pub tags: Vec<String>,
     pub default_preset_id: Option<String>,
     pub default_provider_id: Option<String>,
+    pub use_custom_relationship_prompts: bool,
+    pub relationship_stage_prompts: RelationshipStagePrompts,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RelationshipUnlocks {
+    pub special_greeting: bool,
+    pub nickname: bool,
+    pub idle_lines: bool,
+    pub holiday_reaction: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RelationshipNicknameSettings {
+    pub enabled: bool,
+    pub user_nickname: String,
+    pub character_nickname: String,
+    pub minimum_stage: RelationshipStage,
+}
+
+impl Default for RelationshipNicknameSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            user_nickname: String::new(),
+            character_nickname: String::new(),
+            minimum_stage: RelationshipStage::Close,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RelationshipIdleLine {
+    pub id: String,
+    pub text: String,
+    pub minimum_stage: RelationshipStage,
+    pub enabled: bool,
+    pub weight: u16,
+    pub note: String,
+}
+
+impl Default for RelationshipIdleLine {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            text: String::new(),
+            minimum_stage: RelationshipStage::Neutral,
+            enabled: true,
+            weight: 1,
+            note: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HolidayRule {
+    pub id: String,
+    pub name: String,
+    pub month: u8,
+    pub day: u8,
+    pub enabled: bool,
+    pub scope: String,
+    pub minimum_stage: RelationshipStage,
+    pub prompt: String,
+    pub built_in: bool,
+}
+
+impl Default for HolidayRule {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            month: 1,
+            day: 1,
+            enabled: true,
+            scope: "all".to_string(),
+            minimum_stage: RelationshipStage::Neutral,
+            prompt: String::new(),
+            built_in: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RelationshipPreferences {
+    pub character_id: String,
+    pub nickname_settings: RelationshipNicknameSettings,
+    pub idle_lines: Vec<RelationshipIdleLine>,
+    pub holidays: Vec<HolidayRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RelationshipEvent {
+    pub id: String,
+    pub created_at: String,
+    pub delta: i32,
+    pub mood_delta: i32,
+    pub reason: String,
+    pub source: String,
+    pub confidence: f32,
+    pub user_excerpt: String,
+    pub assistant_excerpt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CharacterRelationship {
+    pub character_id: String,
+    pub affection: i32,
+    pub mood: i32,
+    pub stage: RelationshipStage,
+    pub stage_label: String,
+    pub mood_label: String,
+    pub events: Vec<RelationshipEvent>,
+    pub unlocks: RelationshipUnlocks,
+    pub last_passive_decay_at: String,
+    pub warm_streak: u32,
+    pub last_warm_interaction_at: String,
+    pub nickname_settings: RelationshipNicknameSettings,
+    pub idle_lines: Vec<RelationshipIdleLine>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationshipChangedPayload {
+    pub relationship: CharacterRelationship,
+    pub delta: i32,
+    pub mood_delta: i32,
+    pub reason: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -74,6 +257,12 @@ pub struct TavernChatMessage {
     pub content: String,
     pub created_at: String,
     pub bookmarked: bool,
+    #[serde(default)]
+    pub compacted: bool,
+    #[serde(default)]
+    pub compacted_at: Option<String>,
+    #[serde(default)]
+    pub summary_batch_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -226,6 +415,20 @@ pub struct PromptBuildResult {
     pub max_output_tokens: u16,
     pub temperature: f32,
     pub reply_limit: usize,
+    pub memory_summary_used: bool,
+    pub recent_message_count: usize,
+    pub bookmarked_message_count: usize,
+    pub compacted_message_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMemoryCompactResult {
+    pub chat: TavernChatSession,
+    pub compacted_count: usize,
+    pub skipped_bookmarked_count: usize,
+    pub summary_updated: bool,
+    pub message: String,
 }
 
 fn now_stamp() -> String {
@@ -233,6 +436,10 @@ fn now_stamp() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().to_string())
         .unwrap_or_else(|_| "0".to_string())
+}
+
+pub fn now_stamp_public() -> String {
+    now_stamp()
 }
 
 fn sanitize_id(value: &str, fallback: &str) -> String {
@@ -259,6 +466,116 @@ fn new_id(prefix: &str, label: &str) -> String {
     format!("{}-{}-{}-{}", prefix, sanitize_id(label, "item"), now_stamp(), counter)
 }
 
+fn default_relationship_stage_prompts() -> RelationshipStagePrompts {
+    RelationshipStagePrompts {
+        guarded: "关系阶段: 戒备。{{char}}对{{user}}保持明显距离，语气谨慎、冷淡，不轻易亲近；如果用户真诚道歉或温和交流，可以出现一点缓和。".to_string(),
+        distant: "关系阶段: 疏离。{{char}}愿意正常回应{{user}}，但仍保留边界，少用亲昵称呼，先观察用户是否可靠。".to_string(),
+        neutral: "关系阶段: 普通。{{char}}自然、礼貌、轻松地陪伴{{user}}，不刻意暧昧，也不过分冷淡。".to_string(),
+        close: "关系阶段: 亲近。{{char}}对{{user}}更放松、更主动，语气可以更柔软亲昵，会记得对方的善意和相处感。".to_string(),
+        trusted: "关系阶段: 信赖。{{char}}很信任{{user}}，语气亲近、有安全感，可以出现专属问候、昵称倾向和更坦率的情绪表达。".to_string(),
+    }
+}
+
+fn default_idle_lines() -> Vec<RelationshipIdleLine> {
+    vec![
+        RelationshipIdleLine {
+            id: "idle-neutral".to_string(),
+            text: "我在这里，慢慢来就好。".to_string(),
+            minimum_stage: RelationshipStage::Neutral,
+            enabled: true,
+            weight: 1,
+            note: "普通阶段默认待机台词".to_string(),
+        },
+        RelationshipIdleLine {
+            id: "idle-close".to_string(),
+            text: "要不要歇一小会儿？我陪你。".to_string(),
+            minimum_stage: RelationshipStage::Close,
+            enabled: true,
+            weight: 1,
+            note: "亲近阶段默认待机台词".to_string(),
+        },
+        RelationshipIdleLine {
+            id: "idle-trusted".to_string(),
+            text: "今天也在你身边，放心。".to_string(),
+            minimum_stage: RelationshipStage::Trusted,
+            enabled: true,
+            weight: 1,
+            note: "信赖阶段默认待机台词".to_string(),
+        },
+    ]
+}
+
+fn default_holidays() -> Vec<HolidayRule> {
+    vec![
+        HolidayRule {
+            id: "new-year".to_string(),
+            name: "元旦".to_string(),
+            month: 1,
+            day: 1,
+            enabled: true,
+            scope: "all".to_string(),
+            minimum_stage: RelationshipStage::Neutral,
+            prompt: "今天是元旦，可以自然地给出新年问候。".to_string(),
+            built_in: true,
+        },
+        HolidayRule {
+            id: "valentine".to_string(),
+            name: "情人节".to_string(),
+            month: 2,
+            day: 14,
+            enabled: true,
+            scope: "all".to_string(),
+            minimum_stage: RelationshipStage::Close,
+            prompt: "今天是情人节；如果关系足够亲近，可以温柔回应节日氛围，但不要突然过分亲密。".to_string(),
+            built_in: true,
+        },
+        HolidayRule {
+            id: "children-day".to_string(),
+            name: "儿童节".to_string(),
+            month: 6,
+            day: 1,
+            enabled: true,
+            scope: "all".to_string(),
+            minimum_stage: RelationshipStage::Neutral,
+            prompt: "今天是儿童节，可以用轻快可爱的语气祝福一下。".to_string(),
+            built_in: true,
+        },
+        HolidayRule {
+            id: "qixi-placeholder".to_string(),
+            name: "七夕占位".to_string(),
+            month: 0,
+            day: 0,
+            enabled: false,
+            scope: "manual".to_string(),
+            minimum_stage: RelationshipStage::Close,
+            prompt: "七夕相关反应入口；v1 不做农历自动换算，可手动填入当年阳历日期。".to_string(),
+            built_in: true,
+        },
+        HolidayRule {
+            id: "christmas".to_string(),
+            name: "圣诞".to_string(),
+            month: 12,
+            day: 25,
+            enabled: true,
+            scope: "all".to_string(),
+            minimum_stage: RelationshipStage::Neutral,
+            prompt: "今天是圣诞，可以自然地给出节日问候。".to_string(),
+            built_in: true,
+        },
+        HolidayRule {
+            id: "character-birthday".to_string(),
+            name: "角色生日入口".to_string(),
+            month: 0,
+            day: 0,
+            enabled: false,
+            scope: "manual".to_string(),
+            minimum_stage: RelationshipStage::Neutral,
+            prompt: "角色生日反应入口；填入月日后启用。".to_string(),
+            built_in: true,
+        },
+    ]
+}
+
 fn tavern_paths(app: &AppHandle) -> Result<TavernPaths, String> {
     let root = app
         .path()
@@ -271,6 +588,7 @@ fn tavern_paths(app: &AppHandle) -> Result<TavernPaths, String> {
         chats: root.join("chats"),
         worldbooks: root.join("worldbooks"),
         presets: root.join("presets"),
+        relationships: root.join("relationships"),
         avatars: root.join("avatars"),
         root,
     };
@@ -281,6 +599,7 @@ fn tavern_paths(app: &AppHandle) -> Result<TavernPaths, String> {
         &paths.chats,
         &paths.worldbooks,
         &paths.presets,
+        &paths.relationships,
         &paths.avatars,
     ] {
         fs::create_dir_all(dir).map_err(|err| format!("无法创建酒馆数据目录: {err}"))?;
@@ -290,6 +609,10 @@ fn tavern_paths(app: &AppHandle) -> Result<TavernPaths, String> {
 
 fn json_path(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{}.json", sanitize_id(id, "item")))
+}
+
+fn holidays_path(paths: &TavernPaths) -> PathBuf {
+    paths.root.join("holidays.json")
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
@@ -513,6 +836,742 @@ fn emit_personas_changed(
     Ok(personas)
 }
 
+fn stage_for_affection(affection: i32) -> RelationshipStage {
+    match affection {
+        value if value <= -50 => RelationshipStage::Guarded,
+        value if value <= -15 => RelationshipStage::Distant,
+        value if value < 35 => RelationshipStage::Neutral,
+        value if value < 75 => RelationshipStage::Close,
+        _ => RelationshipStage::Trusted,
+    }
+}
+
+fn stage_label(stage: RelationshipStage) -> &'static str {
+    match stage {
+        RelationshipStage::Guarded => "戒备",
+        RelationshipStage::Distant => "疏离",
+        RelationshipStage::Neutral => "普通",
+        RelationshipStage::Close => "亲近",
+        RelationshipStage::Trusted => "信赖",
+    }
+}
+
+fn mood_label(mood: i32) -> &'static str {
+    match mood {
+        value if value <= -45 => "心情很差",
+        value if value <= -15 => "有点低落",
+        value if value < 15 => "心情平稳",
+        value if value < 45 => "心情不错",
+        _ => "很开心",
+    }
+}
+
+fn relationship_unlocks(affection: i32) -> RelationshipUnlocks {
+    RelationshipUnlocks {
+        special_greeting: affection >= 35,
+        nickname: affection >= 55,
+        idle_lines: affection >= 75,
+        holiday_reaction: affection >= 75,
+    }
+}
+
+fn stage_rank(stage: RelationshipStage) -> i32 {
+    match stage {
+        RelationshipStage::Guarded => 0,
+        RelationshipStage::Distant => 1,
+        RelationshipStage::Neutral => 2,
+        RelationshipStage::Close => 3,
+        RelationshipStage::Trusted => 4,
+    }
+}
+
+fn stage_allows(current: RelationshipStage, minimum: RelationshipStage) -> bool {
+    stage_rank(current) >= stage_rank(minimum)
+}
+
+fn normalize_idle_lines(lines: &mut Vec<RelationshipIdleLine>) {
+    if lines.is_empty() {
+        *lines = default_idle_lines();
+    }
+    for line in lines {
+        if line.id.trim().is_empty() {
+            line.id = new_id("idle", &line.text);
+        }
+        if line.weight == 0 {
+            line.weight = 1;
+        }
+    }
+}
+
+fn normalize_holidays(holidays: &mut Vec<HolidayRule>) {
+    for holiday in holidays.iter_mut() {
+        if holiday.id.trim().is_empty() {
+            holiday.id = new_id("holiday", &holiday.name);
+        }
+        holiday.month = holiday.month.min(12);
+        holiday.day = holiday.day.min(31);
+        if holiday.scope.trim().is_empty() {
+            holiday.scope = "all".to_string();
+        }
+    }
+
+    for default_holiday in default_holidays() {
+        if !holidays.iter().any(|holiday| holiday.id == default_holiday.id) {
+            holidays.push(default_holiday);
+        }
+    }
+}
+
+fn load_holidays(app: &AppHandle) -> Result<Vec<HolidayRule>, String> {
+    let paths = tavern_paths(app)?;
+    let path = holidays_path(&paths);
+    let mut holidays = if path.exists() {
+        read_json::<Vec<HolidayRule>>(&path)?
+    } else {
+        default_holidays()
+    };
+    normalize_holidays(&mut holidays);
+    write_json(&path, &holidays)?;
+    Ok(holidays)
+}
+
+fn save_holidays(app: &AppHandle, mut holidays: Vec<HolidayRule>) -> Result<Vec<HolidayRule>, String> {
+    normalize_holidays(&mut holidays);
+    let paths = tavern_paths(app)?;
+    write_json(&holidays_path(&paths), &holidays)?;
+    Ok(holidays)
+}
+
+fn default_relationship(character_id: &str) -> CharacterRelationship {
+    let mut relationship = CharacterRelationship {
+        character_id: character_id.to_string(),
+        affection: 0,
+        mood: 0,
+        stage: RelationshipStage::Neutral,
+        stage_label: String::new(),
+        mood_label: String::new(),
+        events: Vec::new(),
+        unlocks: RelationshipUnlocks::default(),
+        last_passive_decay_at: String::new(),
+        warm_streak: 0,
+        last_warm_interaction_at: String::new(),
+        nickname_settings: RelationshipNicknameSettings::default(),
+        idle_lines: default_idle_lines(),
+        updated_at: now_stamp(),
+    };
+    normalize_relationship(&mut relationship);
+    relationship
+}
+
+fn normalize_relationship(relationship: &mut CharacterRelationship) {
+    relationship.affection = relationship.affection.clamp(-100, 100);
+    relationship.mood = relationship.mood.clamp(-100, 100);
+    relationship.stage = stage_for_affection(relationship.affection);
+    relationship.stage_label = stage_label(relationship.stage).to_string();
+    relationship.mood_label = mood_label(relationship.mood).to_string();
+    relationship.unlocks = relationship_unlocks(relationship.affection);
+    normalize_idle_lines(&mut relationship.idle_lines);
+    if relationship.updated_at.trim().is_empty() {
+        relationship.updated_at = now_stamp();
+    }
+    if relationship.events.len() > 20 {
+        let overflow = relationship.events.len() - 20;
+        relationship.events.drain(0..overflow);
+    }
+}
+
+fn load_relationship_internal(app: &AppHandle, character_id: &str) -> Result<CharacterRelationship, String> {
+    let paths = tavern_paths(app)?;
+    let path = json_path(&paths.relationships, character_id);
+    let mut relationship = if path.exists() {
+        read_json::<CharacterRelationship>(&path)?
+    } else {
+        default_relationship(character_id)
+    };
+    if relationship.character_id.trim().is_empty() {
+        relationship.character_id = character_id.to_string();
+    }
+    normalize_relationship(&mut relationship);
+    write_json(&path, &relationship)?;
+    Ok(relationship)
+}
+
+fn save_relationship_internal(app: &AppHandle, relationship: &mut CharacterRelationship) -> Result<(), String> {
+    relationship.updated_at = now_stamp();
+    normalize_relationship(relationship);
+    let paths = tavern_paths(app)?;
+    write_json(&json_path(&paths.relationships, &relationship.character_id), relationship)
+}
+
+fn emit_relationship_changed(
+    app: &AppHandle,
+    relationship: CharacterRelationship,
+    delta: i32,
+    mood_delta: i32,
+    reason: String,
+    source: String,
+) {
+    let _ = app.emit(
+        "relationship:changed",
+        RelationshipChangedPayload {
+            relationship,
+            delta,
+            mood_delta,
+            reason,
+            source,
+        },
+    );
+}
+
+fn relationship_stage_prompt(
+    character: &TavernCharacter,
+    persona: &Persona,
+    relationship: &CharacterRelationship,
+) -> String {
+    let defaults = default_relationship_stage_prompts();
+    let configured = if character.use_custom_relationship_prompts {
+        &character.relationship_stage_prompts
+    } else {
+        &defaults
+    };
+    let fallback = match relationship.stage {
+        RelationshipStage::Guarded => &defaults.guarded,
+        RelationshipStage::Distant => &defaults.distant,
+        RelationshipStage::Neutral => &defaults.neutral,
+        RelationshipStage::Close => &defaults.close,
+        RelationshipStage::Trusted => &defaults.trusted,
+    };
+    let prompt = match relationship.stage {
+        RelationshipStage::Guarded => &configured.guarded,
+        RelationshipStage::Distant => &configured.distant,
+        RelationshipStage::Neutral => &configured.neutral,
+        RelationshipStage::Close => &configured.close,
+        RelationshipStage::Trusted => &configured.trusted,
+    };
+    let selected = if prompt.trim().is_empty() { fallback } else { prompt };
+    selected
+        .replace("{{char}}", &character.name)
+        .replace("{{user}}", &persona.name)
+}
+
+fn relationship_prompt(
+    character: &TavernCharacter,
+    persona: &Persona,
+    relationship: &CharacterRelationship,
+    holidays: &[HolidayRule],
+    client_now: Option<&str>,
+) -> String {
+    let stage_prompt = relationship_stage_prompt(character, persona, relationship);
+    let recent_events = relationship
+        .events
+        .iter()
+        .rev()
+        .take(5)
+        .map(|event| format!("- {} (好感 {:+}, 心情 {:+})", event.reason, event.delta, event.mood_delta))
+        .collect::<Vec<_>>();
+    let mut unlocks = Vec::new();
+    if relationship.unlocks.special_greeting {
+        unlocks.push("可以在自然开场时使用更特别的问候");
+    }
+    if relationship.unlocks.nickname {
+        unlocks.push("可以在合适时表现出昵称倾向，但不要强行使用");
+    }
+    if relationship.unlocks.idle_lines {
+        unlocks.push("可以出现更亲近的待机陪伴台词");
+    }
+    if relationship.unlocks.holiday_reaction {
+        unlocks.push("可以响应节日或纪念日相关的亲近反应");
+    }
+    let nickname_prompt = if relationship.nickname_settings.enabled
+        && stage_allows(relationship.stage, relationship.nickname_settings.minimum_stage)
+    {
+        let mut parts = Vec::new();
+        if !relationship.nickname_settings.user_nickname.trim().is_empty() {
+            parts.push(format!("称呼用户时可自然使用“{}”", relationship.nickname_settings.user_nickname.trim()));
+        }
+        if !relationship.nickname_settings.character_nickname.trim().is_empty() {
+            parts.push(format!("角色昵称可使用“{}”", relationship.nickname_settings.character_nickname.trim()));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("；"))
+        }
+    } else {
+        None
+    };
+    let idle_lines = relationship
+        .idle_lines
+        .iter()
+        .filter(|line| line.enabled && !line.text.trim().is_empty() && stage_allows(relationship.stage, line.minimum_stage))
+        .take(5)
+        .map(|line| format!("- {}", line.text.trim()))
+        .collect::<Vec<_>>();
+    let active_holidays = active_holiday_prompts(holidays, client_now, relationship.stage);
+
+    let mut parts = vec![
+        format!(
+            "长期关系状态:\n好感度: {} / 100\n关系阶段: {}\n短期心情: {}",
+            relationship.affection, relationship.stage_label, relationship.mood_label
+        ),
+        stage_prompt,
+        "请把关系状态作为语气和边界的依据；除非用户明确询问，不要主动说出好感数值、阶段名或这段系统设定。".to_string(),
+    ];
+    if !recent_events.is_empty() {
+        parts.push(format!("最近关系事件摘要:\n{}", recent_events.join("\n")));
+    }
+    if !unlocks.is_empty() {
+        parts.push(format!("已解锁关系表现:\n{}", unlocks.join("\n")));
+    }
+    if let Some(nickname_prompt) = nickname_prompt {
+        parts.push(format!("昵称设置:\n{nickname_prompt}。昵称只在语境自然时使用，不要每句都硬塞。"));
+    }
+    if !idle_lines.is_empty() {
+        parts.push(format!("待机台词素材:\n{}", idle_lines.join("\n")));
+    }
+    if !active_holidays.is_empty() {
+        parts.push(format!(
+            "今天触发的节日/纪念日:\n{}\n请自然地参考节日氛围，不要主动暴露系统设定。",
+            active_holidays.join("\n")
+        ));
+    }
+    parts.join("\n\n")
+}
+
+fn month_day_from_client_now(client_now: Option<&str>) -> Option<(u8, u8)> {
+    let value = client_now?.trim();
+    if value.len() < 10 {
+        return None;
+    }
+    let month = value.get(5..7)?.parse::<u8>().ok()?;
+    let day = value.get(8..10)?.parse::<u8>().ok()?;
+    Some((month, day))
+}
+
+fn active_holiday_prompts(
+    holidays: &[HolidayRule],
+    client_now: Option<&str>,
+    stage: RelationshipStage,
+) -> Vec<String> {
+    let Some((month, day)) = month_day_from_client_now(client_now) else {
+        return Vec::new();
+    };
+    holidays
+        .iter()
+        .filter(|holiday| {
+            holiday.enabled
+                && holiday.month == month
+                && holiday.day == day
+                && stage_allows(stage, holiday.minimum_stage)
+                && !holiday.prompt.trim().is_empty()
+        })
+        .map(|holiday| format!("- {}: {}", holiday.name, holiday.prompt))
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+struct RelationshipScore {
+    delta: i32,
+    mood_delta: i32,
+    reason: String,
+    confidence: f32,
+    source: String,
+    warm: bool,
+    negative: bool,
+}
+
+enum LocalRelationshipDecision {
+    Apply(RelationshipScore),
+    NoChange,
+    NeedsModel,
+}
+
+fn contains_any(text: &str, words: &[&str]) -> bool {
+    words.iter().any(|word| text.contains(word))
+}
+
+fn local_relationship_score(relationship: &CharacterRelationship, user_input: &str) -> LocalRelationshipDecision {
+    let text = user_input.trim().to_lowercase();
+    if text.is_empty() {
+        return LocalRelationshipDecision::NoChange;
+    }
+
+    let threats = ["威胁", "伤害你", "打你", "杀了你", "弄死你", "毁掉你"];
+    let insults = ["滚", "闭嘴", "讨厌你", "烦死了", "废物", "垃圾", "笨蛋", "蠢", "没用"];
+    let apologies = ["对不起", "抱歉", "不好意思", "我错了", "原谅我"];
+    let praise = ["谢谢", "感谢", "喜欢你", "爱你", "你真好", "可爱", "温柔", "厉害", "辛苦了", "抱抱"];
+    let care = ["你还好吗", "累不累", "休息一下", "别难过", "陪陪你"];
+    let uncertain = ["开心", "难过", "生气", "失望", "关系", "好感", "心情"];
+
+    if contains_any(&text, &threats) {
+        return LocalRelationshipDecision::Apply(RelationshipScore {
+            delta: -6,
+            mood_delta: -12,
+            reason: "感受到威胁或恶意命令".to_string(),
+            confidence: 1.0,
+            source: "local".to_string(),
+            warm: false,
+            negative: true,
+        });
+    }
+    if contains_any(&text, &insults) {
+        return LocalRelationshipDecision::Apply(RelationshipScore {
+            delta: -4,
+            mood_delta: -8,
+            reason: "被冒犯，心情明显变差".to_string(),
+            confidence: 0.95,
+            source: "local".to_string(),
+            warm: false,
+            negative: true,
+        });
+    }
+    if contains_any(&text, &apologies) {
+        let delta = if relationship.affection < 0 { 3 } else { 1 };
+        return LocalRelationshipDecision::Apply(RelationshipScore {
+            delta,
+            mood_delta: 5,
+            reason: "真诚道歉让关系缓和".to_string(),
+            confidence: 0.9,
+            source: "local".to_string(),
+            warm: true,
+            negative: false,
+        });
+    }
+    if contains_any(&text, &praise) {
+        return LocalRelationshipDecision::Apply(RelationshipScore {
+            delta: 2,
+            mood_delta: 6,
+            reason: "收到了感谢或夸奖".to_string(),
+            confidence: 0.9,
+            source: "local".to_string(),
+            warm: true,
+            negative: false,
+        });
+    }
+    if contains_any(&text, &care) {
+        return LocalRelationshipDecision::Apply(RelationshipScore {
+            delta: 2,
+            mood_delta: 5,
+            reason: "感受到关心".to_string(),
+            confidence: 0.85,
+            source: "local".to_string(),
+            warm: true,
+            negative: false,
+        });
+    }
+    if contains_any(&text, &uncertain) {
+        return LocalRelationshipDecision::NeedsModel;
+    }
+    LocalRelationshipDecision::NoChange
+}
+
+fn limit_relationship_delta(current_affection: i32, delta: i32) -> i32 {
+    let capped = delta.clamp(-6, 6);
+    if current_affection < 0 && capped > 3 {
+        3
+    } else {
+        capped
+    }
+}
+
+fn excerpt(text: &str, limit: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= limit {
+        return trimmed.to_string();
+    }
+    trimmed.chars().take(limit).collect::<String>() + "..."
+}
+
+fn apply_relationship_score(
+    app: &AppHandle,
+    character_id: &str,
+    score: RelationshipScore,
+    user_input: &str,
+    assistant_reply: &str,
+) -> Result<CharacterRelationship, String> {
+    let mut relationship = load_relationship_internal(app, character_id)?;
+    let mut raw_delta = score.delta;
+    let mut raw_mood_delta = score.mood_delta;
+    let mut reason = score.reason.clone();
+    let mut source = score.source.clone();
+    if score.negative {
+        relationship.warm_streak = 0;
+    } else if relationship.affection < 0 && score.warm && (score.delta > 0 || score.mood_delta > 0) {
+        relationship.warm_streak = relationship.warm_streak.saturating_add(1);
+        relationship.last_warm_interaction_at = now_stamp();
+        if relationship.warm_streak % 3 == 0 {
+            raw_delta += 1;
+            raw_mood_delta += 2;
+            reason = format!("{}；连续温和互动让关系继续恢复", reason);
+            source = "recovery".to_string();
+        }
+    }
+
+    let delta = limit_relationship_delta(relationship.affection, raw_delta);
+    let mood_delta = raw_mood_delta.clamp(-12, 12);
+    if delta == 0 && mood_delta == 0 {
+        save_relationship_internal(app, &mut relationship)?;
+        return Ok(relationship);
+    }
+
+    relationship.affection = (relationship.affection + delta).clamp(-100, 100);
+    relationship.mood = (relationship.mood + mood_delta).clamp(-100, 100);
+    relationship.events.push(RelationshipEvent {
+        id: new_id("rel", character_id),
+        created_at: now_stamp(),
+        delta,
+        mood_delta,
+        reason: excerpt(&reason, 72),
+        source: source.clone(),
+        confidence: score.confidence.clamp(0.0, 1.0),
+        user_excerpt: excerpt(user_input, 120),
+        assistant_excerpt: excerpt(assistant_reply, 120),
+    });
+    save_relationship_internal(app, &mut relationship)?;
+    emit_relationship_changed(app, relationship.clone(), delta, mood_delta, reason, source);
+    Ok(relationship)
+}
+
+#[derive(Debug, Serialize)]
+struct RelationshipThinking {
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct RelationshipScoreRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+    stream: bool,
+    temperature: f32,
+    max_tokens: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<RelationshipThinking>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelationshipScoreResponse {
+    choices: Vec<RelationshipScoreChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelationshipScoreChoice {
+    message: RelationshipScoreMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelationshipScoreMessage {
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+    stream: bool,
+    temperature: f32,
+    max_tokens: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<RelationshipThinking>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SummaryResponse {
+    #[serde(default)]
+    choices: Vec<SummaryChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SummaryChoice {
+    message: SummaryMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct SummaryMessage {
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelRelationshipScore {
+    delta: i32,
+    mood_delta: i32,
+    reason: String,
+    confidence: f32,
+}
+
+fn extract_json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some(&text[start..=end])
+}
+
+async fn model_relationship_score(
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+    model: &str,
+    api_key: Option<String>,
+    relationship: &CharacterRelationship,
+    user_input: &str,
+    assistant_reply: &str,
+) -> Result<Option<RelationshipScore>, String> {
+    let prompt = format!(
+        "当前好感: {}, 阶段: {}, 心情: {}\n用户本轮消息:\n{}\n角色回复:\n{}\n\n判断用户这轮话对角色关系的影响。只返回 JSON，字段为 delta、moodDelta、reason、confidence。delta 范围 -6 到 6，moodDelta 范围 -12 到 12。普通中性聊天应返回 0。reason 用中文短句。",
+        relationship.affection,
+        relationship.stage_label,
+        relationship.mood_label,
+        excerpt(user_input, 600),
+        excerpt(assistant_reply, 600),
+    );
+    let body = RelationshipScoreRequest {
+        model: model.to_string(),
+        messages: vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: "你是关系变化评分器。只输出一个 JSON 对象，不要输出解释、Markdown 或代码块。".to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: prompt,
+            },
+        ],
+        stream: false,
+        temperature: 0.0,
+        max_tokens: 120,
+        thinking: if provider.provider_type == "deepseek" {
+            Some(RelationshipThinking { kind: "disabled" })
+        } else {
+            None
+        },
+    };
+
+    let mut request = client.post(&provider.base_url).json(&body);
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("关系评分请求失败: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("关系评分返回 {}", response.status()));
+    }
+    let parsed = response
+        .json::<RelationshipScoreResponse>()
+        .await
+        .map_err(|err| format!("关系评分 JSON 解析失败: {err}"))?;
+    let content = parsed
+        .choices
+        .first()
+        .map(|choice| choice.message.content.trim())
+        .unwrap_or_default();
+    let Some(json_text) = extract_json_object(content) else {
+        return Ok(None);
+    };
+    let raw = serde_json::from_str::<ModelRelationshipScore>(json_text)
+        .map_err(|err| format!("关系评分内容不是有效 JSON: {err}"))?;
+    if raw.confidence < 0.55 || (raw.delta == 0 && raw.mood_delta == 0) {
+        return Ok(None);
+    }
+    Ok(Some(RelationshipScore {
+        delta: raw.delta,
+        mood_delta: raw.mood_delta,
+        reason: raw.reason,
+        confidence: raw.confidence,
+        source: "model".to_string(),
+        warm: raw.delta > 0 || raw.mood_delta > 0,
+        negative: raw.delta < 0 || raw.mood_delta < 0,
+    }))
+}
+
+pub async fn judge_relationship_after_exchange(
+    app: AppHandle,
+    client: reqwest::Client,
+    prompt: PromptBuildResult,
+    user_input: String,
+    assistant_reply: String,
+) -> Result<(), String> {
+    let relationship = load_relationship_internal(&app, &prompt.character_id)?;
+    let score = match local_relationship_score(&relationship, &user_input) {
+        LocalRelationshipDecision::Apply(score) => Some(score),
+        LocalRelationshipDecision::NoChange => None,
+        LocalRelationshipDecision::NeedsModel => {
+            let provider = match provider_by_id(Some(&prompt.provider_id)) {
+                Ok(provider) => provider,
+                Err(_) => return Ok(()),
+            };
+            let api_key = match read_provider_api_key(&provider.id) {
+                Ok(value) => value,
+                Err(_) => return Ok(()),
+            };
+            if provider.provider_type != "ollama" && api_key.is_none() {
+                return Ok(());
+            }
+            model_relationship_score(
+                &client,
+                &provider,
+                &prompt.model,
+                api_key,
+                &relationship,
+                &user_input,
+                &assistant_reply,
+            )
+            .await
+            .unwrap_or(None)
+        }
+    };
+    if let Some(score) = score {
+        let _ = apply_relationship_score(&app, &prompt.character_id, score, &user_input, &assistant_reply);
+    }
+    Ok(())
+}
+
+fn apply_passive_decay_to_relationship(relationship: &mut CharacterRelationship, now: &str) -> Option<(i32, i32)> {
+    if relationship.affection <= -100 {
+        relationship.last_passive_decay_at = now.to_string();
+        normalize_relationship(relationship);
+        return None;
+    }
+    relationship.affection = (relationship.affection - 1).clamp(-100, 100);
+    relationship.last_passive_decay_at = now.to_string();
+    normalize_relationship(relationship);
+    Some((-1, 0))
+}
+
+pub fn apply_passive_relationship_decay(app: &AppHandle) -> Result<(), String> {
+    let characters = list_characters(app.clone())?;
+    let now = now_stamp();
+    for character in characters.into_iter().filter(|character| character.enabled) {
+        let mut relationship = load_relationship_internal(app, &character.id)?;
+        if let Some((delta, mood_delta)) = apply_passive_decay_to_relationship(&mut relationship, &now) {
+            save_relationship_internal(app, &mut relationship)?;
+            emit_relationship_changed(
+                app,
+                relationship,
+                delta,
+                mood_delta,
+                "时间流逝".to_string(),
+                "timeDecay".to_string(),
+            );
+        } else {
+            save_relationship_internal(app, &mut relationship)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn start_relationship_decay_loop(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60 * 60)).await;
+            let _ = apply_passive_relationship_decay(&app);
+        }
+    });
+}
+
 fn chat_file_paths_by_id(dir: &Path, chat_id: &str) -> Result<Vec<PathBuf>, String> {
     let target_stem = sanitize_id(chat_id, "item");
     let mut exact_matches = Vec::new();
@@ -565,6 +1624,8 @@ fn default_character() -> TavernCharacter {
         tags: vec!["桌宠".to_string(), "治愈".to_string(), "鲸灵".to_string()],
         default_preset_id: Some(DEFAULT_PRESET_ID.to_string()),
         default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+        use_custom_relationship_prompts: false,
+        relationship_stage_prompts: default_relationship_stage_prompts(),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -772,6 +1833,9 @@ fn seed_default_chat(app: &AppHandle) -> Result<(), String> {
                     content: message.content,
                     created_at: now_stamp(),
                     bookmarked: false,
+                    compacted: false,
+                    compacted_at: None,
+                    summary_batch_id: None,
                 })
                 .collect();
             chat.summary = memory.summary;
@@ -787,6 +1851,9 @@ fn seed_default_chat(app: &AppHandle) -> Result<(), String> {
             content: character.first_mes,
             created_at: now_stamp(),
             bookmarked: false,
+            compacted: false,
+            compacted_at: None,
+            summary_batch_id: None,
         });
     }
     save_chat_internal(app, &chat)
@@ -913,6 +1980,9 @@ fn create_chat_internal(app: &AppHandle, character_id: Option<String>) -> Result
             content: character.first_mes,
             created_at: now_stamp(),
             bookmarked: false,
+            compacted: false,
+            compacted_at: None,
+            summary_batch_id: None,
         });
     }
     save_chat_internal(app, &chat)?;
@@ -1043,6 +2113,8 @@ fn character_from_value(value: Value) -> TavernCharacter {
         tags: value_tags(data),
         default_preset_id: Some(DEFAULT_PRESET_ID.to_string()),
         default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
+        use_custom_relationship_prompts: false,
+        relationship_stage_prompts: default_relationship_stage_prompts(),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -1055,6 +2127,21 @@ fn normalize_character(mut character: TavernCharacter) -> TavernCharacter {
     }
     if character.name.trim().is_empty() {
         character.name = "未命名角色".to_string();
+    }
+    if character.relationship_stage_prompts.guarded.trim().is_empty() {
+        character.relationship_stage_prompts.guarded = default_relationship_stage_prompts().guarded;
+    }
+    if character.relationship_stage_prompts.distant.trim().is_empty() {
+        character.relationship_stage_prompts.distant = default_relationship_stage_prompts().distant;
+    }
+    if character.relationship_stage_prompts.neutral.trim().is_empty() {
+        character.relationship_stage_prompts.neutral = default_relationship_stage_prompts().neutral;
+    }
+    if character.relationship_stage_prompts.close.trim().is_empty() {
+        character.relationship_stage_prompts.close = default_relationship_stage_prompts().close;
+    }
+    if character.relationship_stage_prompts.trusted.trim().is_empty() {
+        character.relationship_stage_prompts.trusted = default_relationship_stage_prompts().trusted;
     }
     if character.created_at.trim().is_empty() {
         character.created_at = now.clone();
@@ -1248,6 +2335,70 @@ pub fn compact_reply(reply: &str, limit: usize) -> String {
     trimmed.chars().take(take).collect::<String>() + "..."
 }
 
+fn limit_text(text: &str, limit: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= limit {
+        return trimmed.to_string();
+    }
+    let take = limit.saturating_sub(3);
+    trimmed.chars().take(take).collect::<String>() + "..."
+}
+
+fn speaker_label(role: &str) -> &'static str {
+    if role == "user" {
+        "用户"
+    } else if role == "assistant" {
+        "角色"
+    } else {
+        "系统"
+    }
+}
+
+fn ensure_summary_sections(summary: &str) -> String {
+    let mut normalized = limit_text(summary, SUMMARY_STORE_LIMIT);
+    if normalized.trim().is_empty() {
+        normalized = SUMMARY_SECTION_TITLES
+            .iter()
+            .map(|title| format!("{title}:\n- 未记录"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+    }
+    for title in SUMMARY_SECTION_TITLES {
+        if !normalized.contains(title) {
+            normalized.push_str(&format!("\n\n{title}:\n- 未记录"));
+        }
+    }
+    normalized
+}
+
+fn bookmarked_context_for_prompt(
+    messages: &[TavernChatMessage],
+    recent_ids: &HashSet<String>,
+    limit: usize,
+) -> (String, usize) {
+    let mut bookmarked = messages
+        .iter()
+        .filter(|message| message.bookmarked && !message.compacted && !recent_ids.contains(&message.id))
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>();
+    bookmarked.reverse();
+
+    let count = bookmarked.len();
+    let text = bookmarked
+        .into_iter()
+        .map(|message| {
+            format!(
+                "{}: {}",
+                speaker_label(&message.role),
+                limit_text(&message.content, 180)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (limit_text(&text, limit), count)
+}
+
 pub fn build_prompt_for_chat(
     app: &AppHandle,
     user_input: &str,
@@ -1256,6 +2407,7 @@ pub fn build_prompt_for_chat(
     preset_id: Option<String>,
     provider_id: Option<String>,
     model: Option<String>,
+    client_now: Option<String>,
 ) -> Result<PromptBuildResult, String> {
     ensure_seed_data(app)?;
     let chat = current_or_new_chat(app, chat_id, character_id.clone())?;
@@ -1278,18 +2430,60 @@ pub fn build_prompt_for_chat(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| provider.default_model.clone());
 
+    let mut recent = chat
+        .messages
+        .iter()
+        .filter(|message| !message.compacted)
+        .rev()
+        .take(preset.context_messages)
+        .cloned()
+        .collect::<Vec<_>>();
+    recent.reverse();
+    let recent_ids = recent
+        .iter()
+        .map(|message| message.id.clone())
+        .collect::<HashSet<_>>();
+    let (bookmarked_context, bookmarked_message_count) =
+        bookmarked_context_for_prompt(&chat.messages, &recent_ids, BOOKMARK_PROMPT_LIMIT);
+    let compacted_message_count = chat.messages.iter().filter(|message| message.compacted).count();
+
     let mut trigger_text = user_input.to_string();
-    for message in chat.messages.iter().rev().take(preset.context_messages) {
+    if !chat.summary.trim().is_empty() {
+        trigger_text.push('\n');
+        trigger_text.push_str(&limit_text(&chat.summary, SUMMARY_PROMPT_LIMIT));
+    }
+    for message in &recent {
         trigger_text.push('\n');
         trigger_text.push_str(&message.content);
+    }
+    if !bookmarked_context.trim().is_empty() {
+        trigger_text.push('\n');
+        trigger_text.push_str(&bookmarked_context);
     }
     let matched = match_worldbook_entries(app, &trigger_text)?;
 
     let mut system_parts = Vec::new();
     system_parts.push(replace_vars(&preset.system_prompt, &character, &persona, &preset));
+    let time_context = client_now
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| format!("Unix 毫秒 {}", now_stamp()));
+    system_parts.push(format!(
+        "当前本地时间:\n{time_context}\n请把这个时间作为判断今天、节日、问候和上下文时效的依据。"
+    ));
     system_parts.push(format!(
         "角色卡:\n名字: {}\n描述: {}\n性格: {}\n场景: {}",
         character.name, character.description, character.personality, character.scenario
+    ));
+    let relationship = load_relationship_internal(app, &character.id)?;
+    let holidays = load_holidays(app)?;
+    system_parts.push(relationship_prompt(
+        &character,
+        &persona,
+        &relationship,
+        &holidays,
+        client_now.as_deref(),
     ));
     if !character.mes_example.trim().is_empty() {
         system_parts.push(format!("示例对话:\n{}", character.mes_example));
@@ -1298,7 +2492,10 @@ pub fn build_prompt_for_chat(
         system_parts.push(format!("用户 Persona:\n{}", persona.description));
     }
     if !chat.summary.trim().is_empty() {
-        system_parts.push(format!("长期摘要:\n{}", compact_reply(&chat.summary, 1800)));
+        system_parts.push(format!("长期摘要:\n{}", limit_text(&chat.summary, SUMMARY_PROMPT_LIMIT)));
+    }
+    if !bookmarked_context.trim().is_empty() {
+        system_parts.push(format!("重要收藏摘录:\n{}", bookmarked_context));
     }
     if !matched.is_empty() {
         let lore = matched
@@ -1320,16 +2517,9 @@ pub fn build_prompt_for_chat(
         content: system_parts.join("\n\n"),
     };
     let mut messages = vec![system_message];
-    let mut recent = chat
-        .messages
-        .iter()
-        .rev()
-        .take(preset.context_messages)
-        .cloned()
-        .collect::<Vec<_>>();
-    recent.reverse();
 
     let mut budget_used = estimate_prompt_tokens(&messages) + estimate_text_tokens(user_input) + 4;
+    let mut recent_message_count = 0usize;
     for message in recent {
         let cost = estimate_message_tokens(&ChatMessage {
             role: message.role.clone(),
@@ -1339,6 +2529,7 @@ pub fn build_prompt_for_chat(
             continue;
         }
         budget_used += cost;
+        recent_message_count += 1;
         messages.push(ChatMessage {
             role: message.role,
             content: message.content,
@@ -1360,6 +2551,10 @@ pub fn build_prompt_for_chat(
         max_output_tokens: preset.max_output_tokens,
         temperature: preset.temperature,
         reply_limit: preset.reply_limit,
+        memory_summary_used: !chat.summary.trim().is_empty(),
+        recent_message_count,
+        bookmarked_message_count,
+        compacted_message_count,
         messages,
         matched_worldbook_entries: matched,
     })
@@ -1370,9 +2565,14 @@ pub fn append_exchange(
     prompt: &PromptBuildResult,
     user_input: &str,
     assistant_reply: &str,
+    user_created_at: Option<&str>,
+    assistant_created_at: &str,
 ) -> Result<(), String> {
     let mut chat = load_chat(app, &prompt.chat_id)?;
-    let now = now_stamp();
+    let user_created_at = user_created_at
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(assistant_created_at)
+        .to_string();
     chat.character_id = prompt.character_id.clone();
     chat.preset_id = Some(prompt.preset_id.clone());
     chat.provider_id = Some(prompt.provider_id.clone());
@@ -1380,40 +2580,406 @@ pub fn append_exchange(
         id: new_id("msg", "user"),
         role: "user".to_string(),
         content: user_input.to_string(),
-        created_at: now.clone(),
+        created_at: user_created_at,
         bookmarked: false,
+        compacted: false,
+        compacted_at: None,
+        summary_batch_id: None,
     });
     chat.messages.push(TavernChatMessage {
         id: new_id("msg", "assistant"),
         role: "assistant".to_string(),
         content: assistant_reply.to_string(),
-        created_at: now.clone(),
+        created_at: assistant_created_at.to_string(),
         bookmarked: false,
+        compacted: false,
+        compacted_at: None,
+        summary_batch_id: None,
     });
 
-    let max_messages = 160usize;
-    if chat.messages.len() > max_messages {
-        let overflow = chat.messages.len() - max_messages;
-        let older = chat.messages.drain(0..overflow).collect::<Vec<_>>();
-        let mut digest = chat.summary;
-        for message in older {
-            let speaker = if message.role == "user" { "用户" } else { "角色" };
-            digest.push_str(&format!("{speaker}: {}; ", message.content));
-        }
-        chat.summary = digest
-            .chars()
-            .rev()
-            .take(1800)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-    }
-
-    chat.updated_at = now;
+    chat.updated_at = assistant_created_at.to_string();
     save_chat_internal(app, &chat)?;
     let _ = emit_chat_list_changed(app, "message", Some(chat.id), None);
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct CompactionSelection {
+    message_ids: Vec<String>,
+    skipped_bookmarked_count: usize,
+}
+
+fn select_compaction_messages(
+    chat: &TavernChatSession,
+    context_messages: usize,
+    force: bool,
+) -> Option<CompactionSelection> {
+    let keep_raw_count = context_messages.max(2);
+    let batch_size = (keep_raw_count / 2).max(1);
+    let active_indices = chat
+        .messages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| (!message.compacted).then_some(index))
+        .collect::<Vec<_>>();
+
+    if active_indices.len() <= keep_raw_count {
+        return None;
+    }
+
+    let protected_start = active_indices.len().saturating_sub(keep_raw_count);
+    let older_indices = &active_indices[..protected_start];
+    let skipped_bookmarked_count = older_indices
+        .iter()
+        .filter(|index| chat.messages[**index].bookmarked)
+        .count();
+    let eligible_ids = older_indices
+        .iter()
+        .filter_map(|index| {
+            let message = &chat.messages[*index];
+            (!message.bookmarked).then(|| message.id.clone())
+        })
+        .collect::<Vec<_>>();
+    let target_count = if force {
+        eligible_ids.len().min(batch_size)
+    } else {
+        batch_size
+    };
+
+    if target_count == 0 || eligible_ids.len() < target_count {
+        return None;
+    }
+
+    Some(CompactionSelection {
+        message_ids: eligible_ids.into_iter().take(target_count).collect(),
+        skipped_bookmarked_count,
+    })
+}
+
+fn resolve_chat_runtime(
+    app: &AppHandle,
+    chat: &TavernChatSession,
+    preset_id: Option<&str>,
+    provider_id: Option<&str>,
+    model: Option<&str>,
+) -> Result<(PromptPreset, ProviderConfig, String), String> {
+    let character = load_character(app, Some(&chat.character_id))?;
+    let preset = load_preset(
+        app,
+        preset_id
+            .filter(|value| !value.trim().is_empty())
+            .or(chat.preset_id.as_deref())
+            .or(character.default_preset_id.as_deref()),
+    )?;
+    let selected_provider_id = provider_id
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| chat.provider_id.clone())
+        .or_else(|| character.default_provider_id.clone())
+        .unwrap_or_else(|| DEFAULT_PROVIDER_ID.to_string());
+    let provider = provider_by_id(Some(&selected_provider_id))?;
+    let selected_model = model
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| provider.default_model.clone());
+    Ok((preset, provider, selected_model))
+}
+
+fn summary_transcript(messages: &[TavernChatMessage]) -> String {
+    messages
+        .iter()
+        .map(|message| {
+            format!(
+                "[{}] {}: {}",
+                message.created_at,
+                speaker_label(&message.role),
+                message.content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+async fn summarize_chat_messages(
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+    model: &str,
+    api_key: Option<String>,
+    existing_summary: &str,
+    batch_messages: &[TavernChatMessage],
+) -> Result<String, String> {
+    let old_summary = if existing_summary.trim().is_empty() {
+        "（暂无）".to_string()
+    } else {
+        limit_text(existing_summary, SUMMARY_STORE_LIMIT)
+    };
+    let transcript = summary_transcript(batch_messages);
+    let user_prompt = format!(
+        "已有长期摘要:\n{old_summary}\n\n本次需要整理进长期摘要的旧消息:\n{transcript}\n\n请合并成新的完整长期摘要。固定使用这些栏目并保留栏目名:\n- 用户身份/偏好\n- 和角色的重要关系\n- 已发生的重要事件\n- 未完成的话题/承诺\n- 用户情绪倾向\n- 角色需要记住的称呼、禁忌、习惯\n\n要求: 只根据消息和旧摘要整理，不要编造；不确定就写“未记录”；保留称呼、禁忌、承诺、关系变化和重要事件；语言简洁；不要输出 Markdown 代码块。"
+    );
+    let body = SummaryRequest {
+        model: model.to_string(),
+        messages: vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: "你是角色聊天的长期记忆整理器。你只负责把旧对话合并成结构化摘要，不能添加没有根据的新事实。".to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: user_prompt,
+            },
+        ],
+        stream: false,
+        temperature: 0.1,
+        max_tokens: SUMMARY_OUTPUT_TOKENS,
+        thinking: if provider.provider_type == "deepseek" {
+            Some(RelationshipThinking { kind: "disabled" })
+        } else {
+            None
+        },
+    };
+
+    let mut request = client.post(&provider.base_url).json(&body);
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("长期摘要整理请求失败: {err}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("长期摘要整理返回 {status}: {}", limit_text(&text, 400)));
+    }
+    let parsed = response
+        .json::<SummaryResponse>()
+        .await
+        .map_err(|err| format!("长期摘要整理 JSON 解析失败: {err}"))?;
+    let content = parsed
+        .choices
+        .first()
+        .map(|choice| choice.message.content.trim())
+        .unwrap_or_default();
+    if content.is_empty() {
+        return Err("长期摘要整理没有返回内容".to_string());
+    }
+    Ok(ensure_summary_sections(content))
+}
+
+async fn compact_chat_memory_internal(
+    app: AppHandle,
+    client: reqwest::Client,
+    chat_id: String,
+    preset_id: Option<String>,
+    provider_id: Option<String>,
+    model: Option<String>,
+    force: bool,
+) -> Result<ChatMemoryCompactResult, String> {
+    let chat = load_chat(&app, &chat_id)?;
+    let (preset, provider, selected_model) = resolve_chat_runtime(
+        &app,
+        &chat,
+        preset_id.as_deref(),
+        provider_id.as_deref(),
+        model.as_deref(),
+    )?;
+    let Some(selection) = select_compaction_messages(&chat, preset.context_messages, force) else {
+        return Ok(ChatMemoryCompactResult {
+            chat,
+            compacted_count: 0,
+            skipped_bookmarked_count: 0,
+            summary_updated: false,
+            message: "还没有达到需要整理的上下文上限".to_string(),
+        });
+    };
+
+    let selected_ids = selection
+        .message_ids
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let batch_messages = chat
+        .messages
+        .iter()
+        .filter(|message| selected_ids.contains(&message.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if batch_messages.is_empty() {
+        return Ok(ChatMemoryCompactResult {
+            chat,
+            compacted_count: 0,
+            skipped_bookmarked_count: selection.skipped_bookmarked_count,
+            summary_updated: false,
+            message: "没有可整理的旧消息".to_string(),
+        });
+    }
+
+    let api_key = read_provider_api_key(&provider.id)?;
+    if provider.provider_type != "ollama" && api_key.is_none() {
+        return Err(format!("还没有设置 {} API Key，无法整理长期摘要。", provider.name));
+    }
+
+    let next_summary = summarize_chat_messages(
+        &client,
+        &provider,
+        &selected_model,
+        api_key,
+        &chat.summary,
+        &batch_messages,
+    )
+    .await?;
+
+    let mut latest = load_chat(&app, &chat_id)?;
+    if latest.summary != chat.summary {
+        return Ok(ChatMemoryCompactResult {
+            chat: latest,
+            compacted_count: 0,
+            skipped_bookmarked_count: selection.skipped_bookmarked_count,
+            summary_updated: false,
+            message: "长期摘要刚刚被更新过，本次整理已跳过，稍后可重试。".to_string(),
+        });
+    }
+
+    let now = now_stamp();
+    let summary_batch_id = new_id("summary", &chat_id);
+    let mut compacted_count = 0usize;
+    let mut skipped_bookmarked_count = selection.skipped_bookmarked_count;
+    for message in &mut latest.messages {
+        if !selected_ids.contains(&message.id) {
+            continue;
+        }
+        if message.bookmarked {
+            skipped_bookmarked_count += 1;
+            continue;
+        }
+        if message.compacted {
+            continue;
+        }
+        message.compacted = true;
+        message.compacted_at = Some(now.clone());
+        message.summary_batch_id = Some(summary_batch_id.clone());
+        compacted_count += 1;
+    }
+
+    if compacted_count == 0 {
+        return Ok(ChatMemoryCompactResult {
+            chat: latest,
+            compacted_count: 0,
+            skipped_bookmarked_count,
+            summary_updated: false,
+            message: "选中的旧消息已被收藏或已整理，本次没有改动。".to_string(),
+        });
+    }
+
+    latest.summary = next_summary;
+    latest.updated_at = now;
+    save_chat_internal(&app, &latest)?;
+    let _ = emit_chat_list_changed(&app, "compact", Some(latest.id.clone()), None);
+    Ok(ChatMemoryCompactResult {
+        chat: latest,
+        compacted_count,
+        skipped_bookmarked_count,
+        summary_updated: true,
+        message: format!("已整理 {compacted_count} 条旧消息进长期摘要"),
+    })
+}
+
+pub async fn compact_chat_memory_for_prompt(
+    app: AppHandle,
+    client: reqwest::Client,
+    prompt: PromptBuildResult,
+    force: bool,
+) -> Result<ChatMemoryCompactResult, String> {
+    compact_chat_memory_internal(
+        app,
+        client,
+        prompt.chat_id,
+        Some(prompt.preset_id),
+        Some(prompt.provider_id),
+        Some(prompt.model),
+        force,
+    )
+    .await
+}
+
+pub async fn compact_chat_memory(
+    app: AppHandle,
+    client: reqwest::Client,
+    chat_id: String,
+    force: bool,
+) -> Result<ChatMemoryCompactResult, String> {
+    compact_chat_memory_internal(app, client, chat_id, None, None, None, force).await
+}
+
+#[tauri::command]
+pub fn get_relationship(app: AppHandle, character_id: String) -> Result<CharacterRelationship, String> {
+    load_relationship_internal(&app, &character_id)
+}
+
+#[tauri::command]
+pub fn list_relationships(app: AppHandle) -> Result<Vec<CharacterRelationship>, String> {
+    let characters = list_characters(app.clone())?;
+    let mut relationships = Vec::new();
+    for character in characters {
+        relationships.push(load_relationship_internal(&app, &character.id)?);
+    }
+    relationships.sort_by(|a, b| a.character_id.cmp(&b.character_id));
+    Ok(relationships)
+}
+
+#[tauri::command]
+pub fn reset_relationship(app: AppHandle, character_id: String) -> Result<CharacterRelationship, String> {
+    let mut relationship = default_relationship(&character_id);
+    save_relationship_internal(&app, &mut relationship)?;
+    emit_relationship_changed(
+        &app,
+        relationship.clone(),
+        0,
+        0,
+        "关系已重置".to_string(),
+        "system".to_string(),
+    );
+    Ok(relationship)
+}
+
+#[tauri::command]
+pub fn get_relationship_preferences(app: AppHandle, character_id: String) -> Result<RelationshipPreferences, String> {
+    let relationship = load_relationship_internal(&app, &character_id)?;
+    Ok(RelationshipPreferences {
+        character_id,
+        nickname_settings: relationship.nickname_settings,
+        idle_lines: relationship.idle_lines,
+        holidays: load_holidays(&app)?,
+    })
+}
+
+#[tauri::command]
+pub fn save_relationship_preferences(
+    app: AppHandle,
+    character_id: String,
+    preferences: RelationshipPreferences,
+) -> Result<RelationshipPreferences, String> {
+    let mut relationship = load_relationship_internal(&app, &character_id)?;
+    relationship.nickname_settings = preferences.nickname_settings;
+    relationship.idle_lines = preferences.idle_lines;
+    normalize_idle_lines(&mut relationship.idle_lines);
+    save_relationship_internal(&app, &mut relationship)?;
+    let holidays = save_holidays(&app, preferences.holidays)?;
+    emit_relationship_changed(
+        &app,
+        relationship.clone(),
+        0,
+        0,
+        "关系设置已保存".to_string(),
+        "system".to_string(),
+    );
+    Ok(RelationshipPreferences {
+        character_id,
+        nickname_settings: relationship.nickname_settings,
+        idle_lines: relationship.idle_lines,
+        holidays,
+    })
 }
 
 #[tauri::command]
@@ -1677,6 +3243,11 @@ pub fn bookmark_message(app: AppHandle, chat_id: String, message_id: String, boo
     for message in &mut chat.messages {
         if message.id == message_id {
             message.bookmarked = bookmarked;
+            if bookmarked {
+                message.compacted = false;
+                message.compacted_at = None;
+                message.summary_batch_id = None;
+            }
         }
     }
     chat.updated_at = now_stamp();
@@ -1693,6 +3264,16 @@ pub fn clear_chat_messages(app: AppHandle, chat_id: String) -> Result<TavernChat
     chat.updated_at = now_stamp();
     save_chat_internal(&app, &chat)?;
     let _ = emit_chat_list_changed(&app, "clear", Some(chat.id.clone()), None);
+    Ok(chat)
+}
+
+#[tauri::command]
+pub fn save_chat_summary(app: AppHandle, chat_id: String, summary: String) -> Result<TavernChatSession, String> {
+    let mut chat = load_chat(&app, &chat_id)?;
+    chat.summary = limit_text(&summary, SUMMARY_STORE_LIMIT);
+    chat.updated_at = now_stamp();
+    save_chat_internal(&app, &chat)?;
+    let _ = emit_chat_list_changed(&app, "summary", Some(chat.id.clone()), None);
     Ok(chat)
 }
 
@@ -1792,6 +3373,7 @@ pub fn preview_prompt(
     preset_id: Option<String>,
     provider_id: Option<String>,
     message: Option<String>,
+    client_now: Option<String>,
 ) -> Result<PromptBuildResult, String> {
     build_prompt_for_chat(
         &app,
@@ -1801,6 +3383,7 @@ pub fn preview_prompt(
         preset_id,
         provider_id,
         None,
+        client_now,
     )
 }
 
@@ -1869,7 +3452,23 @@ mod tests {
                 content: title.to_string(),
                 created_at: updated_at.to_string(),
                 bookmarked: false,
+                compacted: false,
+                compacted_at: None,
+                summary_batch_id: None,
             }],
+        }
+    }
+
+    fn message_fixture(index: usize) -> TavernChatMessage {
+        TavernChatMessage {
+            id: format!("msg-{index}"),
+            role: if index % 2 == 0 { "user" } else { "assistant" }.to_string(),
+            content: format!("message {index}"),
+            created_at: index.to_string(),
+            bookmarked: false,
+            compacted: false,
+            compacted_at: None,
+            summary_batch_id: None,
         }
     }
 
@@ -1901,6 +3500,28 @@ mod tests {
     }
 
     #[test]
+    fn compaction_selection_keeps_recent_and_skips_bookmarks() {
+        let mut chat = chat_fixture("chat", "title", "1");
+        chat.messages = (0..10).map(message_fixture).collect();
+        chat.messages[1].bookmarked = true;
+
+        let selection = select_compaction_messages(&chat, 4, false).expect("selection");
+
+        assert_eq!(selection.message_ids, vec!["msg-0".to_string(), "msg-2".to_string()]);
+        assert_eq!(selection.skipped_bookmarked_count, 1);
+    }
+
+    #[test]
+    fn auto_compaction_waits_for_full_batch_but_manual_can_force() {
+        let mut chat = chat_fixture("chat", "title", "1");
+        chat.messages = (0..5).map(message_fixture).collect();
+
+        assert!(select_compaction_messages(&chat, 4, false).is_none());
+        let forced = select_compaction_messages(&chat, 4, true).expect("forced selection");
+        assert_eq!(forced.message_ids, vec!["msg-0".to_string()]);
+    }
+
+    #[test]
     fn list_chat_items_dedupes_by_id_and_keeps_newest() {
         let dir = temp_chat_dir("dedupe");
         write_json(&dir.join("older.json"), &chat_fixture("same-chat-id", "older", "1")).unwrap();
@@ -1912,5 +3533,123 @@ mod tests {
         assert_eq!(chats[0].id, "same-chat-id");
         assert_eq!(chats[0].title, "newer");
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn maps_affection_to_relationship_stage() {
+        assert_eq!(stage_for_affection(-80), RelationshipStage::Guarded);
+        assert_eq!(stage_for_affection(-20), RelationshipStage::Distant);
+        assert_eq!(stage_for_affection(0), RelationshipStage::Neutral);
+        assert_eq!(stage_for_affection(40), RelationshipStage::Close);
+        assert_eq!(stage_for_affection(90), RelationshipStage::Trusted);
+    }
+
+    #[test]
+    fn local_relationship_rules_score_obvious_messages() {
+        let relationship = default_relationship("jingling");
+
+        let positive = match local_relationship_score(&relationship, "谢谢你，你真好") {
+            LocalRelationshipDecision::Apply(score) => score,
+            _ => panic!("expected positive local score"),
+        };
+        assert!(positive.delta > 0);
+        assert!(positive.mood_delta > 0);
+        assert_eq!(positive.source, "local");
+        assert!(positive.warm);
+        assert!(!positive.negative);
+
+        let negative = match local_relationship_score(&relationship, "闭嘴，真没用") {
+            LocalRelationshipDecision::Apply(score) => score,
+            _ => panic!("expected negative local score"),
+        };
+        assert!(negative.delta < 0);
+        assert!(negative.mood_delta < 0);
+        assert_eq!(negative.source, "local");
+        assert!(!negative.warm);
+        assert!(negative.negative);
+
+        let mut negative_relationship = default_relationship("jingling");
+        negative_relationship.affection = -20;
+        let apology = match local_relationship_score(&negative_relationship, "对不起，我错了") {
+            LocalRelationshipDecision::Apply(score) => score,
+            _ => panic!("expected apology local score"),
+        };
+        assert_eq!(apology.delta, 3);
+        assert!(apology.warm);
+
+        assert!(matches!(
+            local_relationship_score(&relationship, "今天吃了面"),
+            LocalRelationshipDecision::NoChange
+        ));
+        assert!(matches!(
+            local_relationship_score(&relationship, "我有点失望，但也不知道怎么说"),
+            LocalRelationshipDecision::NeedsModel
+        ));
+    }
+
+    #[test]
+    fn passive_decay_updates_timestamp_without_adding_events() {
+        let mut relationship = default_relationship("jingling");
+        relationship.affection = 1;
+        let event_count = relationship.events.len();
+
+        let result = apply_passive_decay_to_relationship(&mut relationship, "123456");
+
+        assert_eq!(result, Some((-1, 0)));
+        assert_eq!(relationship.affection, 0);
+        assert_eq!(relationship.last_passive_decay_at, "123456");
+        assert_eq!(relationship.events.len(), event_count);
+
+        relationship.affection = -100;
+        let result = apply_passive_decay_to_relationship(&mut relationship, "456789");
+        assert_eq!(result, None);
+        assert_eq!(relationship.affection, -100);
+        assert_eq!(relationship.last_passive_decay_at, "456789");
+    }
+
+    #[test]
+    fn active_holidays_respect_date_enabled_and_stage() {
+        let holidays = default_holidays();
+
+        let neutral_prompts =
+            active_holiday_prompts(&holidays, Some("2026-02-14 12:00:00 Asia/Shanghai"), RelationshipStage::Neutral);
+        assert!(neutral_prompts.is_empty());
+
+        let close_prompts =
+            active_holiday_prompts(&holidays, Some("2026-02-14 12:00:00 Asia/Shanghai"), RelationshipStage::Close);
+        assert_eq!(close_prompts.len(), 1);
+        assert!(close_prompts[0].contains("情人节"));
+
+        let qixi_prompts =
+            active_holiday_prompts(&holidays, Some("2026-00-00 12:00:00 Asia/Shanghai"), RelationshipStage::Trusted);
+        assert!(qixi_prompts.is_empty());
+    }
+
+    #[test]
+    fn relationship_normalize_clamps_and_limits_event_log() {
+        let mut relationship = default_relationship("jingling");
+        relationship.affection = 250;
+        relationship.mood = -250;
+        for index in 0..25 {
+            relationship.events.push(RelationshipEvent {
+                id: format!("event-{index}"),
+                created_at: index.to_string(),
+                delta: 1,
+                mood_delta: 1,
+                reason: "test".to_string(),
+                source: "local".to_string(),
+                confidence: 1.0,
+                user_excerpt: String::new(),
+                assistant_excerpt: String::new(),
+            });
+        }
+
+        normalize_relationship(&mut relationship);
+
+        assert_eq!(relationship.affection, 100);
+        assert_eq!(relationship.mood, -100);
+        assert_eq!(relationship.events.len(), 20);
+        assert_eq!(relationship.events[0].id, "event-5");
+        assert!(relationship.unlocks.special_greeting);
     }
 }

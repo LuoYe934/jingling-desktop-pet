@@ -3,6 +3,7 @@ import {
   Bot,
   Braces,
   DatabaseZap,
+  HeartHandshake,
   KeyRound,
   MessageSquareText,
   Minus,
@@ -23,13 +24,16 @@ import {
   importPersona,
   importPreset,
   importWorldbook,
+  listenToRelationshipChanges,
   listenToChatListChanges,
   listCharacters,
   listChats,
   listPersonas,
   listPresets,
   listProviders,
+  listRelationships,
   listWorldbooks,
+  resetRelationship,
   saveCharacter,
   savePersona,
   savePreset,
@@ -40,6 +44,7 @@ import {
 } from '../lib/tauri'
 import type {
   Persona,
+  CharacterRelationship,
   PromptPreset,
   ProviderConfig,
   TavernCharacter,
@@ -51,9 +56,10 @@ import { ChatLibrary } from './tavern/ChatLibrary'
 import { PersonaEditor } from './tavern/PersonaEditor'
 import { PresetEditor } from './tavern/PresetEditor'
 import { PromptPreview } from './tavern/PromptPreview'
+import { RelationshipPanel } from './tavern/RelationshipPanel'
 import { WorldbookEditor } from './tavern/WorldbookEditor'
 
-type TabId = 'characters' | 'personas' | 'chats' | 'worldbooks' | 'presets' | 'preview' | 'extensions'
+type TabId = 'characters' | 'personas' | 'chats' | 'worldbooks' | 'presets' | 'relationships' | 'preview' | 'extensions'
 
 const tabs: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: 'characters', label: '角色', icon: Bot },
@@ -61,6 +67,7 @@ const tabs: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: 'chats', label: '聊天库', icon: MessageSquareText },
   { id: 'worldbooks', label: '世界书', icon: BookOpen },
   { id: 'presets', label: '预设', icon: DatabaseZap },
+  { id: 'relationships', label: '关系', icon: HeartHandshake },
   { id: 'preview', label: 'Prompt', icon: Braces },
   { id: 'extensions', label: '扩展', icon: Sparkles },
 ]
@@ -87,16 +94,26 @@ export function TavernWindow() {
   const [worldbooks, setWorldbooks] = useState<Worldbook[]>([])
   const [presets, setPresets] = useState<PromptPreset[]>([])
   const [providers, setProviders] = useState<ProviderConfig[]>([])
+  const [relationships, setRelationships] = useState<CharacterRelationship[]>([])
   const [status, setStatus] = useState('就绪')
 
   async function refresh() {
-    const [nextCharacters, nextPersonas, nextChats, nextWorldbooks, nextPresets, nextProviders] = await Promise.all([
+    const [
+      nextCharacters,
+      nextPersonas,
+      nextChats,
+      nextWorldbooks,
+      nextPresets,
+      nextProviders,
+      nextRelationships,
+    ] = await Promise.all([
       listCharacters(),
       listPersonas(),
       listChats(),
       listWorldbooks(),
       listPresets(),
       listProviders(),
+      listRelationships(),
     ])
     setCharacters(nextCharacters)
     setPersonas(nextPersonas)
@@ -104,6 +121,7 @@ export function TavernWindow() {
     setWorldbooks(nextWorldbooks)
     setPresets(nextPresets)
     setProviders(nextProviders)
+    setRelationships(nextRelationships)
     return nextChats
   }
 
@@ -114,6 +132,22 @@ export function TavernWindow() {
   useEffect(() => {
     let cleanup = () => {}
     listenToChatListChanges((payload) => setChats(payload.chats)).then((unlisten) => {
+      cleanup = unlisten
+    })
+    return () => cleanup()
+  }, [])
+
+  useEffect(() => {
+    let cleanup = () => {}
+    listenToRelationshipChanges(({ relationship }) => {
+      setRelationships((current) => {
+        const index = current.findIndex((item) => item.characterId === relationship.characterId)
+        if (index < 0) return [...current, relationship]
+        const next = [...current]
+        next[index] = relationship
+        return next
+      })
+    }).then((unlisten) => {
       cleanup = unlisten
     })
     return () => cleanup()
@@ -210,6 +244,7 @@ export function TavernWindow() {
               <CharacterEditor
                 characters={characters}
                 presets={presets}
+                relationships={relationships}
                 onSave={(character) => run(() => saveCharacter(character), '角色已保存')}
                 onImport={(path) => run(() => importCharacterCard(path), '角色卡已导入')}
                 onExport={(characterId, path) => run(() => exportCharacterCard(characterId, path), '角色卡已导出')}
@@ -238,6 +273,13 @@ export function TavernWindow() {
                 onSave={savePresetAndRefresh}
                 onImport={(path) => run(() => importPreset(path), '预设已导入')}
                 onExport={(presetId, path) => run(() => exportPreset(presetId, path), '预设已导出')}
+              />
+            )}
+            {tab === 'relationships' && (
+              <RelationshipPanel
+                characters={characters}
+                relationships={relationships}
+                onReset={(characterId) => run(() => resetRelationship(characterId), '关系已重置')}
               />
             )}
             {tab === 'preview' && <PromptPreview characters={characters} chats={chats} presets={presets} />}

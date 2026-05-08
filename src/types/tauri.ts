@@ -6,6 +6,9 @@ export interface ChatMessage {
   content: string
   streaming?: boolean
   bookmarked?: boolean
+  compacted?: boolean
+  compactedAt?: string | null
+  summaryBatchId?: string | null
   createdAt?: string
   tokenCount?: number
   tokenSource?: 'api' | 'estimate'
@@ -44,6 +47,113 @@ export interface PiperSynthesisResult {
   wavPath: string
 }
 
+export type RelationshipStage = 'guarded' | 'distant' | 'neutral' | 'close' | 'trusted'
+
+export interface RelationshipStagePrompts {
+  guarded: string
+  distant: string
+  neutral: string
+  close: string
+  trusted: string
+}
+
+export const relationshipStageLabels: Record<RelationshipStage, string> = {
+  guarded: '戒备',
+  distant: '疏离',
+  neutral: '普通',
+  close: '亲近',
+  trusted: '信赖',
+}
+
+export const defaultRelationshipStagePrompts: RelationshipStagePrompts = {
+  guarded:
+    '关系阶段: 戒备。{{char}}对{{user}}保持明显距离，语气谨慎、冷淡，不轻易亲近；如果用户真诚道歉或温和交流，可以出现一点缓和。',
+  distant: '关系阶段: 疏离。{{char}}愿意正常回应{{user}}，但仍保留边界，少用亲昵称呼，先观察用户是否可靠。',
+  neutral: '关系阶段: 普通。{{char}}自然、礼貌、轻松地陪伴{{user}}，不刻意暧昧，也不过分冷淡。',
+  close: '关系阶段: 亲近。{{char}}对{{user}}更放松、更主动，语气可以更柔软亲昵，会记得对方的善意和相处感。',
+  trusted:
+    '关系阶段: 信赖。{{char}}很信任{{user}}，语气亲近、有安全感，可以出现专属问候、昵称倾向和更坦率的情绪表达。',
+}
+
+export interface RelationshipUnlocks {
+  specialGreeting: boolean
+  nickname: boolean
+  idleLines: boolean
+  holidayReaction: boolean
+}
+
+export interface RelationshipNicknameSettings {
+  enabled: boolean
+  userNickname: string
+  characterNickname: string
+  minimumStage: RelationshipStage
+}
+
+export interface RelationshipIdleLine {
+  id: string
+  text: string
+  minimumStage: RelationshipStage
+  enabled: boolean
+  weight: number
+  note: string
+}
+
+export interface HolidayRule {
+  id: string
+  name: string
+  month: number
+  day: number
+  enabled: boolean
+  scope: string
+  minimumStage: RelationshipStage
+  prompt: string
+  builtIn: boolean
+}
+
+export interface RelationshipPreferences {
+  characterId: string
+  nicknameSettings: RelationshipNicknameSettings
+  idleLines: RelationshipIdleLine[]
+  holidays: HolidayRule[]
+}
+
+export interface RelationshipEvent {
+  id: string
+  createdAt: string
+  delta: number
+  moodDelta: number
+  reason: string
+  source: string
+  confidence: number
+  userExcerpt: string
+  assistantExcerpt: string
+}
+
+export interface CharacterRelationship {
+  characterId: string
+  affection: number
+  mood: number
+  stage: RelationshipStage
+  stageLabel: string
+  moodLabel: string
+  events: RelationshipEvent[]
+  unlocks: RelationshipUnlocks
+  lastPassiveDecayAt: string
+  warmStreak: number
+  lastWarmInteractionAt: string
+  nicknameSettings: RelationshipNicknameSettings
+  idleLines: RelationshipIdleLine[]
+  updatedAt: string
+}
+
+export interface RelationshipChangedPayload {
+  relationship: CharacterRelationship
+  delta: number
+  moodDelta: number
+  reason: string
+  source: string
+}
+
 export interface ChatChunkPayload {
   content: string
 }
@@ -51,6 +161,7 @@ export interface ChatChunkPayload {
 export interface ChatDonePayload {
   content: string
   chatId: string
+  assistantCreatedAt: string
   promptTokens?: number | null
   completionTokens?: number | null
   totalTokens?: number | null
@@ -73,6 +184,8 @@ export interface TavernCharacter {
   tags: string[]
   defaultPresetId?: string | null
   defaultProviderId?: string | null
+  useCustomRelationshipPrompts: boolean
+  relationshipStagePrompts: RelationshipStagePrompts
   createdAt: string
   updatedAt: string
 }
@@ -93,6 +206,9 @@ export interface TavernChatMessage {
   content: string
   createdAt: string
   bookmarked: boolean
+  compacted: boolean
+  compactedAt?: string | null
+  summaryBatchId?: string | null
 }
 
 export interface TavernChatSession {
@@ -117,6 +233,14 @@ export interface TavernChatListItem {
   messageCount: number
   lastMessage: string
   tags: string[]
+}
+
+export interface ChatMemoryCompactResult {
+  chat: TavernChatSession
+  compactedCount: number
+  skippedBookmarkedCount: number
+  summaryUpdated: boolean
+  message: string
 }
 
 export interface WorldbookEntry {
@@ -187,4 +311,8 @@ export interface PromptBuildResult {
   maxOutputTokens: number
   temperature: number
   replyLimit: number
+  memorySummaryUsed: boolean
+  recentMessageCount: number
+  bookmarkedMessageCount: number
+  compactedMessageCount: number
 }

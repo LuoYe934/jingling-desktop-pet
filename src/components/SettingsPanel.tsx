@@ -4,6 +4,7 @@ import {
   AudioLines,
   ChevronDown,
   ChevronUp,
+  Clock3,
   DatabaseZap,
   Gauge,
   Hash,
@@ -47,8 +48,10 @@ export function SettingsPanel({
   const [piperStatus, setPiperStatus] = useState<PiperStatus | null>(null)
   const [ttsStatus, setTtsStatus] = useState('')
   const hasKey = usePetStore((state) => state.hasApiKey)
+  const showMessageTimes = usePetStore((state) => state.showMessageTimes)
   const showTokenStats = usePetStore((state) => state.showTokenStats)
   const setHasApiKey = usePetStore((state) => state.setHasApiKey)
+  const setShowMessageTimes = usePetStore((state) => state.setShowMessageTimes)
   const setShowTokenStats = usePetStore((state) => state.setShowTokenStats)
 
   function update<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
@@ -238,6 +241,22 @@ export function SettingsPanel({
           >
             检测
           </button>
+        </div>
+
+        <div className="settings-row">
+          <label>
+            <Clock3 size={14} />
+            时间
+          </label>
+          <button
+            className={`toggle ${showMessageTimes ? 'toggle--on' : ''}`}
+            type="button"
+            onClick={() => setShowMessageTimes(!showMessageTimes)}
+            title="显示对话时间"
+          >
+            <span />
+          </button>
+          <span />
         </div>
 
         <div className="settings-row">

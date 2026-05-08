@@ -2,17 +2,23 @@ import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { getCurrentWindow, Window } from '@tauri-apps/api/window'
+import { defaultRelationshipStagePrompts } from '../types/tauri'
 import type {
   AppSettings,
+  CharacterRelationship,
+  ChatMemoryCompactResult,
   ChatChunkPayload,
   ChatDonePayload,
   ChatErrorPayload,
+  HolidayRule,
   Persona,
   PiperStatus,
   PiperSynthesisResult,
   PromptBuildResult,
   PromptPreset,
   ProviderConfig,
+  RelationshipChangedPayload,
+  RelationshipPreferences,
   TavernCharacter,
   TavernChatListItem,
   TavernChatSession,
@@ -107,6 +113,8 @@ export interface SendMessageOptions {
   characterId?: string
   presetId?: string
   providerId?: string
+  clientNow?: string
+  userCreatedAt?: string
 }
 
 export async function sendMessage(message: string, options: SendMessageOptions = {}) {
@@ -120,6 +128,8 @@ export async function sendMessage(message: string, options: SendMessageOptions =
     characterId: options.characterId,
     presetId: options.presetId,
     providerId: options.providerId,
+    clientNow: options.clientNow,
+    userCreatedAt: options.userCreatedAt,
   })
 }
 
@@ -361,6 +371,17 @@ export async function listenToPersonaChanges(handler: (payload: PersonasChangedP
   return () => unlisten()
 }
 
+export async function listenToRelationshipChanges(handler: (payload: RelationshipChangedPayload) => void) {
+  if (!runningInTauri()) {
+    const listener = (event: Event) => handler((event as CustomEvent<RelationshipChangedPayload>).detail)
+    window.addEventListener('relationship:changed', listener)
+    return () => window.removeEventListener('relationship:changed', listener)
+  }
+
+  const unlisten = await listen<RelationshipChangedPayload>('relationship:changed', (event) => handler(event.payload))
+  return () => unlisten()
+}
+
 function emitMockChatListChanged(payload: Omit<ChatListChangedPayload, 'chats'>) {
   if (runningInTauri()) return
   window.dispatchEvent(
@@ -409,6 +430,11 @@ function emitMockPersonasChanged(payload: Omit<PersonasChangedPayload, 'personas
   )
 }
 
+function emitMockRelationshipChanged(payload: RelationshipChangedPayload) {
+  if (runningInTauri()) return
+  window.dispatchEvent(new CustomEvent<RelationshipChangedPayload>('relationship:changed', { detail: payload }))
+}
+
 export async function listCharacters() {
   if (!runningInTauri()) return mockCharacters
   return invoke<TavernCharacter[]>('list_characters')
@@ -417,6 +443,31 @@ export async function listCharacters() {
 export async function saveCharacter(character: TavernCharacter) {
   if (!runningInTauri()) return mockSaveCharacter(character)
   return invoke<TavernCharacter>('save_character', { character })
+}
+
+export async function getRelationship(characterId: string) {
+  if (!runningInTauri()) return mockGetRelationship(characterId)
+  return invoke<CharacterRelationship>('get_relationship', { characterId })
+}
+
+export async function listRelationships() {
+  if (!runningInTauri()) return mockCharacters.map((character) => mockGetRelationship(character.id))
+  return invoke<CharacterRelationship[]>('list_relationships')
+}
+
+export async function resetRelationship(characterId: string) {
+  if (!runningInTauri()) return mockResetRelationship(characterId)
+  return invoke<CharacterRelationship>('reset_relationship', { characterId })
+}
+
+export async function getRelationshipPreferences(characterId: string) {
+  if (!runningInTauri()) return mockGetRelationshipPreferences(characterId)
+  return invoke<RelationshipPreferences>('get_relationship_preferences', { characterId })
+}
+
+export async function saveRelationshipPreferences(characterId: string, preferences: RelationshipPreferences) {
+  if (!runningInTauri()) return mockSaveRelationshipPreferences(characterId, preferences)
+  return invoke<RelationshipPreferences>('save_relationship_preferences', { characterId, preferences })
 }
 
 export async function importCharacterCard(path: string) {
@@ -503,6 +554,16 @@ export async function clearChatMessages(chatId: string) {
   return invoke<TavernChatSession>('clear_chat_messages', { chatId })
 }
 
+export async function saveChatSummary(chatId: string, summary: string) {
+  if (!runningInTauri()) return mockSaveChatSummary(chatId, summary)
+  return invoke<TavernChatSession>('save_chat_summary', { chatId, summary })
+}
+
+export async function compactChatMemory(chatId: string) {
+  if (!runningInTauri()) return mockCompactChatMemory(chatId)
+  return invoke<ChatMemoryCompactResult>('compact_chat_memory_command', { chatId })
+}
+
 export async function listWorldbooks() {
   if (!runningInTauri()) return mockWorldbooks
   return invoke<Worldbook[]>('list_worldbooks')
@@ -564,14 +625,30 @@ export async function previewPrompt(params: {
   presetId?: string
   providerId?: string
   message?: string
+  clientNow?: string
 }) {
-  if (!runningInTauri()) return mockPromptPreview
+  if (!runningInTauri()) {
+    return {
+      ...mockPromptPreview,
+      messages: [
+        {
+          role: 'system' as const,
+          content: `${mockPromptPreview.messages[0].content}\n\n当前本地时间：${params.clientNow || '预览时间未知'}`,
+        },
+        {
+          role: 'user' as const,
+          content: params.message?.trim() || mockPromptPreview.messages[1].content,
+        },
+      ],
+    }
+  }
   return invoke<PromptBuildResult>('preview_prompt', {
     chatId: params.chatId,
     characterId: params.characterId,
     presetId: params.presetId,
     providerId: params.providerId,
     message: params.message,
+    clientNow: params.clientNow,
   })
 }
 
@@ -653,6 +730,9 @@ function mockCreateChat(characterId?: string) {
             content: character.firstMes,
             createdAt: now,
             bookmarked: false,
+            compacted: false,
+            compactedAt: null,
+            summaryBatchId: null,
           },
         ]
       : [],
@@ -678,7 +758,15 @@ function mockBookmarkMessage(chatId: string, messageId: string, bookmarked: bool
   const chat = mockChatSessions.find((item) => item.id === chatId)
   if (!chat) throw new Error('没有找到聊天')
   chat.messages = chat.messages.map((message) =>
-    message.id === messageId ? { ...message, bookmarked } : message,
+    message.id === messageId
+      ? {
+          ...message,
+          bookmarked,
+          compacted: bookmarked ? false : message.compacted,
+          compactedAt: bookmarked ? null : message.compactedAt,
+          summaryBatchId: bookmarked ? null : message.summaryBatchId,
+        }
+      : message,
   )
   chat.updatedAt = String(Date.now())
   syncMockChatList()
@@ -695,6 +783,64 @@ function mockClearChatMessages(chatId: string) {
   syncMockChatList()
   emitMockChatListChanged({ activeChatId: chatId, reason: 'clear' })
   return mockLoadChat(chatId)
+}
+
+function mockSaveChatSummary(chatId: string, summary: string) {
+  const chat = mockChatSessions.find((item) => item.id === chatId)
+  if (!chat) throw new Error('没有找到聊天')
+  chat.summary = summary.trim()
+  chat.updatedAt = String(Date.now())
+  syncMockChatList()
+  emitMockChatListChanged({ activeChatId: chatId, reason: 'summary' })
+  return mockLoadChat(chatId)
+}
+
+function mockCompactChatMemory(chatId: string): ChatMemoryCompactResult {
+  const chat = mockChatSessions.find((item) => item.id === chatId)
+  if (!chat) throw new Error('没有找到聊天')
+  const preset = mockPresets.find((item) => item.id === chat.presetId) ?? mockPresets[0]
+  const keepRawCount = Math.max(2, preset?.contextMessages ?? 24)
+  const batchSize = Math.max(1, Math.floor(keepRawCount / 2))
+  const activeMessages = chat.messages.filter((message) => !message.compacted)
+  const olderMessages = activeMessages.slice(0, Math.max(0, activeMessages.length - keepRawCount))
+  const skippedBookmarkedCount = olderMessages.filter((message) => message.bookmarked).length
+  const selected = olderMessages.filter((message) => !message.bookmarked).slice(0, batchSize)
+  if (activeMessages.length <= keepRawCount || selected.length === 0) {
+    return {
+      chat: mockLoadChat(chatId),
+      compactedCount: 0,
+      skippedBookmarkedCount,
+      summaryUpdated: false,
+      message: '还没有达到需要整理的上下文上限',
+    }
+  }
+  const now = String(Date.now())
+  const batchId = `mock-summary-${now}`
+  const selectedIds = new Set(selected.map((message) => message.id))
+  const digest = selected
+    .map((message) => `${message.role === 'user' ? '用户' : '角色'}: ${message.content}`)
+    .join('\n')
+  chat.summary = [
+    chat.summary.trim(),
+    `已发生的重要事件:\n- 预览整理了 ${selected.length} 条旧消息。\n${digest}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+  chat.messages = chat.messages.map((message) =>
+    selectedIds.has(message.id)
+      ? { ...message, compacted: true, compactedAt: now, summaryBatchId: batchId }
+      : message,
+  )
+  chat.updatedAt = now
+  syncMockChatList()
+  emitMockChatListChanged({ activeChatId: chatId, reason: 'compact' })
+  return {
+    chat: mockLoadChat(chatId),
+    compactedCount: selected.length,
+    skippedBookmarkedCount,
+    summaryUpdated: true,
+    message: `已整理 ${selected.length} 条旧消息进长期摘要`,
+  }
 }
 
 function mockUpdateChatSettings(
@@ -740,6 +886,11 @@ function mockSaveCharacter(character: TavernCharacter) {
     name: character.name.trim() || '未命名角色',
     enabled: character.enabled !== false,
     tags: character.tags || [],
+    useCustomRelationshipPrompts: Boolean(character.useCustomRelationshipPrompts),
+    relationshipStagePrompts: {
+      ...defaultRelationshipStagePrompts,
+      ...character.relationshipStagePrompts,
+    },
     createdAt: character.createdAt || now,
     updatedAt: now,
   }
@@ -763,6 +914,182 @@ function mockImportCharacterCard(path: string) {
     createdAt: '',
     updatedAt: '',
   })
+}
+
+function relationshipStageForAffection(affection: number): CharacterRelationship['stage'] {
+  if (affection <= -50) return 'guarded'
+  if (affection <= -15) return 'distant'
+  if (affection < 35) return 'neutral'
+  if (affection < 75) return 'close'
+  return 'trusted'
+}
+
+function relationshipStageLabel(stage: CharacterRelationship['stage']) {
+  return (
+    {
+      guarded: '戒备',
+      distant: '疏离',
+      neutral: '普通',
+      close: '亲近',
+      trusted: '信赖',
+    } satisfies Record<CharacterRelationship['stage'], string>
+  )[stage]
+}
+
+function relationshipMoodLabel(mood: number) {
+  if (mood <= -45) return '心情很差'
+  if (mood <= -15) return '有点低落'
+  if (mood < 15) return '心情平稳'
+  if (mood < 45) return '心情不错'
+  return '很开心'
+}
+
+function normalizeMockRelationship(relationship: CharacterRelationship): CharacterRelationship {
+  const affection = Math.min(100, Math.max(-100, relationship.affection))
+  const mood = Math.min(100, Math.max(-100, relationship.mood))
+  const stage = relationshipStageForAffection(affection)
+  const nicknameSettings = relationship.nicknameSettings ?? {
+    enabled: false,
+    userNickname: '',
+    characterNickname: '',
+    minimumStage: 'close' as const,
+  }
+  const idleLines = relationship.idleLines?.length
+    ? relationship.idleLines
+    : [
+        {
+          id: 'idle-neutral',
+          text: '我在这里，慢慢来就好。',
+          minimumStage: 'neutral' as const,
+          enabled: true,
+          weight: 1,
+          note: '普通阶段默认待机台词',
+        },
+        {
+          id: 'idle-close',
+          text: '要不要歇一小会儿？我陪你。',
+          minimumStage: 'close' as const,
+          enabled: true,
+          weight: 1,
+          note: '亲近阶段默认待机台词',
+        },
+        {
+          id: 'idle-trusted',
+          text: '今天也在你身边，放心。',
+          minimumStage: 'trusted' as const,
+          enabled: true,
+          weight: 1,
+          note: '信赖阶段默认待机台词',
+        },
+      ]
+  return {
+    ...relationship,
+    affection,
+    mood,
+    stage,
+    stageLabel: relationshipStageLabel(stage),
+    moodLabel: relationshipMoodLabel(mood),
+    events: relationship.events.slice(-20),
+    unlocks: {
+      specialGreeting: affection >= 35,
+      nickname: affection >= 55,
+      idleLines: affection >= 75,
+      holidayReaction: affection >= 75,
+    },
+    lastPassiveDecayAt: relationship.lastPassiveDecayAt ?? '',
+    warmStreak: relationship.warmStreak ?? 0,
+    lastWarmInteractionAt: relationship.lastWarmInteractionAt ?? '',
+    nicknameSettings,
+    idleLines,
+  }
+}
+
+function mockGetRelationship(characterId: string) {
+  const existing = mockRelationships.find((item) => item.characterId === characterId)
+  if (existing) return normalizeMockRelationship(existing)
+  const relationship = normalizeMockRelationship({
+    characterId,
+    affection: 0,
+    mood: 0,
+    stage: 'neutral',
+    stageLabel: '普通',
+    moodLabel: '心情平稳',
+    events: [],
+    unlocks: {
+      specialGreeting: false,
+      nickname: false,
+      idleLines: false,
+      holidayReaction: false,
+    },
+    lastPassiveDecayAt: '',
+    warmStreak: 0,
+    lastWarmInteractionAt: '',
+    nicknameSettings: {
+      enabled: false,
+      userNickname: '',
+      characterNickname: '',
+      minimumStage: 'close',
+    },
+    idleLines: [],
+    updatedAt: String(Date.now()),
+  })
+  mockRelationships.push(relationship)
+  return relationship
+}
+
+function mockResetRelationship(characterId: string) {
+  const reset = normalizeMockRelationship({
+    ...mockGetRelationship(characterId),
+    affection: 0,
+    mood: 0,
+    events: [],
+    updatedAt: String(Date.now()),
+  })
+  const index = mockRelationships.findIndex((item) => item.characterId === characterId)
+  if (index >= 0) {
+    mockRelationships[index] = reset
+  } else {
+    mockRelationships.push(reset)
+  }
+  emitMockRelationshipChanged({
+    relationship: reset,
+    delta: 0,
+    moodDelta: 0,
+    reason: '关系已重置',
+    source: 'system',
+  })
+  return reset
+}
+
+function mockGetRelationshipPreferences(characterId: string): RelationshipPreferences {
+  const relationship = mockGetRelationship(characterId)
+  return {
+    characterId,
+    nicknameSettings: relationship.nicknameSettings,
+    idleLines: relationship.idleLines,
+    holidays: mockHolidays,
+  }
+}
+
+function mockSaveRelationshipPreferences(characterId: string, preferences: RelationshipPreferences) {
+  const relationship = mockGetRelationship(characterId)
+  const savedRelationship = normalizeMockRelationship({
+    ...relationship,
+    nicknameSettings: preferences.nicknameSettings,
+    idleLines: preferences.idleLines,
+    updatedAt: String(Date.now()),
+  })
+  const index = mockRelationships.findIndex((item) => item.characterId === characterId)
+  if (index >= 0) mockRelationships[index] = savedRelationship
+  mockHolidays = preferences.holidays
+  emitMockRelationshipChanged({
+    relationship: savedRelationship,
+    delta: 0,
+    moodDelta: 0,
+    reason: '关系设置已保存',
+    source: 'system',
+  })
+  return mockGetRelationshipPreferences(characterId)
 }
 
 function mockSavePersona(persona: Persona) {
@@ -923,8 +1250,108 @@ const mockCharacters: TavernCharacter[] = [
     tags: ['桌宠', '治愈'],
     defaultPresetId: 'healing-short-chat',
     defaultProviderId: 'deepseek',
+    useCustomRelationshipPrompts: false,
+    relationshipStagePrompts: defaultRelationshipStagePrompts,
     createdAt: '0',
     updatedAt: '0',
+  },
+]
+
+const mockRelationships: CharacterRelationship[] = [
+  {
+    characterId: 'jingling',
+    affection: 0,
+    mood: 0,
+    stage: 'neutral',
+    stageLabel: '普通',
+    moodLabel: '心情平稳',
+    events: [],
+    unlocks: {
+      specialGreeting: false,
+      nickname: false,
+      idleLines: false,
+      holidayReaction: false,
+    },
+    lastPassiveDecayAt: '',
+    warmStreak: 0,
+    lastWarmInteractionAt: '',
+    nicknameSettings: {
+      enabled: false,
+      userNickname: '',
+      characterNickname: '',
+      minimumStage: 'close',
+    },
+    idleLines: [],
+    updatedAt: '0',
+  },
+]
+
+let mockHolidays: HolidayRule[] = [
+  {
+    id: 'new-year',
+    name: '元旦',
+    month: 1,
+    day: 1,
+    enabled: true,
+    scope: 'all',
+    minimumStage: 'neutral' as const,
+    prompt: '今天是元旦，可以自然地给出新年问候。',
+    builtIn: true,
+  },
+  {
+    id: 'valentine',
+    name: '情人节',
+    month: 2,
+    day: 14,
+    enabled: true,
+    scope: 'all',
+    minimumStage: 'close' as const,
+    prompt: '今天是情人节；如果关系足够亲近，可以温柔回应节日氛围。',
+    builtIn: true,
+  },
+  {
+    id: 'children-day',
+    name: '儿童节',
+    month: 6,
+    day: 1,
+    enabled: true,
+    scope: 'all',
+    minimumStage: 'neutral' as const,
+    prompt: '今天是儿童节，可以用轻快可爱的语气祝福一下。',
+    builtIn: true,
+  },
+  {
+    id: 'qixi-placeholder',
+    name: '七夕占位',
+    month: 0,
+    day: 0,
+    enabled: false,
+    scope: 'manual',
+    minimumStage: 'close' as const,
+    prompt: '七夕相关反应入口；v1 不做农历自动换算。',
+    builtIn: true,
+  },
+  {
+    id: 'christmas',
+    name: '圣诞',
+    month: 12,
+    day: 25,
+    enabled: true,
+    scope: 'all',
+    minimumStage: 'neutral' as const,
+    prompt: '今天是圣诞，可以自然地给出节日问候。',
+    builtIn: true,
+  },
+  {
+    id: 'character-birthday',
+    name: '角色生日入口',
+    month: 0,
+    day: 0,
+    enabled: false,
+    scope: 'manual',
+    minimumStage: 'neutral' as const,
+    prompt: '角色生日反应入口；填入月日后启用。',
+    builtIn: true,
   },
 ]
 
@@ -958,6 +1385,9 @@ const mockChatSessionTemplate: TavernChatSession = {
       content: '呼噜，我在这里。',
       createdAt: '0',
       bookmarked: false,
+      compacted: false,
+      compactedAt: null,
+      summaryBatchId: null,
     },
   ],
 }
@@ -1065,4 +1495,8 @@ const mockPromptPreview: PromptBuildResult = {
   maxOutputTokens: 220,
   temperature: 0.8,
   replyLimit: 100,
+  memorySummaryUsed: false,
+  recentMessageCount: 0,
+  bookmarkedMessageCount: 0,
+  compactedMessageCount: 0,
 }

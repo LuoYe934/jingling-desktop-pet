@@ -1,12 +1,14 @@
-import { Download, FileUp, ImagePlus, Plus, Save } from 'lucide-react'
+import { Download, FileUp, Heart, ImagePlus, Plus, Save } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { pickAvatarFile } from '../../lib/tauri'
-import type { PromptPreset, TavernCharacter } from '../../types/tauri'
+import { defaultRelationshipStagePrompts, relationshipStageLabels } from '../../types/tauri'
+import type { CharacterRelationship, PromptPreset, RelationshipStage, TavernCharacter } from '../../types/tauri'
 import { AvatarBadge } from '../AvatarBadge'
 
 interface CharacterEditorProps {
   characters: TavernCharacter[]
   presets: PromptPreset[]
+  relationships: CharacterRelationship[]
   onSave: (character: TavernCharacter) => Promise<void>
   onImport: (path: string) => Promise<void>
   onExport: (characterId: string, path: string) => Promise<void>
@@ -26,12 +28,39 @@ function emptyCharacter(): TavernCharacter {
     tags: [],
     defaultPresetId: 'healing-short-chat',
     defaultProviderId: 'deepseek',
+    useCustomRelationshipPrompts: false,
+    relationshipStagePrompts: defaultRelationshipStagePrompts,
     createdAt: '',
     updatedAt: '',
   }
 }
 
-export function CharacterEditor({ characters, presets, onSave, onImport, onExport }: CharacterEditorProps) {
+function normalizeCharacterDraft(character: TavernCharacter): TavernCharacter {
+  return {
+    ...character,
+    useCustomRelationshipPrompts: Boolean(character.useCustomRelationshipPrompts),
+    relationshipStagePrompts: {
+      ...defaultRelationshipStagePrompts,
+      ...character.relationshipStagePrompts,
+    },
+  }
+}
+
+const relationshipStages = Object.keys(relationshipStageLabels) as RelationshipStage[]
+
+function relationshipForCharacter(relationships: CharacterRelationship[], characterId: string) {
+  return relationships.find((relationship) => relationship.characterId === characterId)
+}
+
+function affectionTone(affection: number) {
+  if (affection >= 75) return 'trusted'
+  if (affection >= 35) return 'close'
+  if (affection <= -50) return 'guarded'
+  if (affection <= -15) return 'distant'
+  return 'neutral'
+}
+
+export function CharacterEditor({ characters, presets, relationships, onSave, onImport, onExport }: CharacterEditorProps) {
   const [selectedId, setSelectedId] = useState('')
   const [draft, setDraft] = useState<TavernCharacter>(emptyCharacter())
   const [tagsText, setTagsText] = useState('')
@@ -51,7 +80,7 @@ export function CharacterEditor({ characters, presets, onSave, onImport, onExpor
     const next = selected || characters[0]
     if (!next) return
     setSelectedId(next.id)
-    setDraft(next)
+    setDraft(normalizeCharacterDraft(next))
     setTagsText(next.tags.join(', '))
   }, [characters, selected])
 
@@ -59,9 +88,24 @@ export function CharacterEditor({ characters, presets, onSave, onImport, onExpor
     setDraft((current) => ({ ...current, [key]: value }))
   }
 
+  function updateRelationshipPrompt(stage: RelationshipStage, value: string) {
+    setDraft((current) => ({
+      ...current,
+      relationshipStagePrompts: {
+        ...defaultRelationshipStagePrompts,
+        ...current.relationshipStagePrompts,
+        [stage]: value,
+      },
+    }))
+  }
+
   function characterPayload(nextDraft = draft) {
     return {
       ...nextDraft,
+      relationshipStagePrompts: {
+        ...defaultRelationshipStagePrompts,
+        ...nextDraft.relationshipStagePrompts,
+      },
       tags: tagsText
         .split(',')
         .map((tag) => tag.trim())
@@ -101,23 +145,39 @@ export function CharacterEditor({ characters, presets, onSave, onImport, onExpor
             <Plus size={15} />
           </button>
         </div>
-        {characters.map((character) => (
-          <button
-            key={character.id}
-            className={`tavern-list-item ${character.id === draft.id ? 'tavern-list-item--active' : ''}`}
-            type="button"
-            onClick={() => {
-              setSelectedId(character.id)
-              setDraft(character)
-              setTagsText(character.tags.join(', '))
-            }}
-          >
-            <span>{character.name}</span>
-            <small>
-              {character.enabled ? (character.tags.join(' / ') || '未标记') : `已禁用 / ${character.tags.join(' / ') || '未标记'}`}
-            </small>
-          </button>
-        ))}
+        {characters.map((character) => {
+          const relationship = relationshipForCharacter(relationships, character.id)
+          const affection = relationship?.affection ?? 0
+          const stageLabel = relationship?.stageLabel ?? relationshipStageLabels.neutral
+          const tone = affectionTone(affection)
+
+          return (
+            <button
+              key={character.id}
+              className={`tavern-list-item character-list-item ${
+                character.id === draft.id ? 'tavern-list-item--active' : ''
+              }`}
+              type="button"
+              onClick={() => {
+                setSelectedId(character.id)
+                setDraft(normalizeCharacterDraft(character))
+                setTagsText(character.tags.join(', '))
+              }}
+            >
+              <span className="character-list-item__text">
+                <span>{character.name}</span>
+                <small>
+                  {character.enabled ? (character.tags.join(' / ') || '未标记') : `已禁用 / ${character.tags.join(' / ') || '未标记'}`}
+                </small>
+              </span>
+              <span className={`character-affection-badge character-affection-badge--${tone}`} title={`好感度 ${affection} / ${stageLabel}`}>
+                <Heart size={13} />
+                <strong>{affection}</strong>
+                <small>{stageLabel}</small>
+              </span>
+            </button>
+          )
+        })}
       </aside>
 
       <section className="tavern-editor">
@@ -184,6 +244,30 @@ export function CharacterEditor({ characters, presets, onSave, onImport, onExpor
           示例对话
           <textarea value={draft.mesExample} onChange={(event) => update('mesExample', event.target.value)} />
         </label>
+
+        <section className="relationship-prompt-editor">
+          <label className="checkbox-line">
+            <input
+              type="checkbox"
+              checked={draft.useCustomRelationshipPrompts}
+              onChange={(event) => update('useCustomRelationshipPrompts', event.target.checked)}
+            />
+            自定义好感阶段提示词
+          </label>
+          {draft.useCustomRelationshipPrompts && (
+            <div className="relationship-stage-grid">
+              {relationshipStages.map((stage) => (
+                <label key={stage}>
+                  {relationshipStageLabels[stage]}
+                  <textarea
+                    value={draft.relationshipStagePrompts[stage] || defaultRelationshipStagePrompts[stage]}
+                    onChange={(event) => updateRelationshipPrompt(stage, event.target.value)}
+                  />
+                </label>
+              ))}
+            </div>
+          )}
+        </section>
 
         <div className="tavern-actions">
           <button className="primary-button" type="button" onClick={() => void save()}>

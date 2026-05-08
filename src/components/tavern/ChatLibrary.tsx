@@ -1,8 +1,17 @@
-import { Bookmark, Download, FileUp, RefreshCcw, Search, Trash2 } from 'lucide-react'
+import { Archive, Bookmark, Download, FileUp, RefreshCcw, Save, Search, Sparkles, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type { TavernChatListItem, TavernChatSession } from '../../types/tauri'
 import { normalizeChatList } from '../../lib/chatList'
-import { bookmarkMessage, deleteChat, exportChat, importChat, loadChat, searchChats } from '../../lib/tauri'
+import {
+  bookmarkMessage,
+  compactChatMemory,
+  deleteChat,
+  exportChat,
+  importChat,
+  loadChat,
+  saveChatSummary,
+  searchChats,
+} from '../../lib/tauri'
 
 interface ChatLibraryProps {
   chats: TavernChatListItem[]
@@ -17,12 +26,21 @@ export function ChatLibrary({ chats, onRefresh }: ChatLibraryProps) {
   const [deletingChatId, setDeletingChatId] = useState('')
   const [exportPath, setExportPath] = useState('')
   const [importPath, setImportPath] = useState('')
+  const [summaryDraft, setSummaryDraft] = useState('')
+  const [compacting, setCompacting] = useState(false)
+  const [savingSummary, setSavingSummary] = useState(false)
   const [status, setStatus] = useState('')
   const visibleChats = useMemo(() => searchResults ?? localChats, [localChats, searchResults])
+  const compactedCount = active?.messages.filter((message) => message.compacted).length ?? 0
+  const bookmarkedCount = active?.messages.filter((message) => message.bookmarked).length ?? 0
 
   useEffect(() => {
     setLocalChats(normalizeChatList(chats))
   }, [chats])
+
+  useEffect(() => {
+    setSummaryDraft(active?.summary ?? '')
+  }, [active?.id, active?.summary])
 
   async function runSearch() {
     const result = await searchChats(query)
@@ -73,6 +91,37 @@ export function ChatLibrary({ chats, onRefresh }: ChatLibraryProps) {
     const next = await bookmarkMessage(active.id, messageId, bookmarked)
     setActive(next)
     await refreshLocalChats()
+  }
+
+  async function saveSummary() {
+    if (!active) return
+    try {
+      setSavingSummary(true)
+      const next = await saveChatSummary(active.id, summaryDraft)
+      setActive(next)
+      await refreshLocalChats()
+      setStatus('长期摘要已保存')
+    } catch (error) {
+      setStatus(String(error))
+    } finally {
+      setSavingSummary(false)
+    }
+  }
+
+  async function compactMemory() {
+    if (!active) return
+    try {
+      setCompacting(true)
+      const result = await compactChatMemory(active.id)
+      setActive(result.chat)
+      await refreshLocalChats()
+      const skipped = result.skippedBookmarkedCount ? `，跳过 ${result.skippedBookmarkedCount} 条收藏` : ''
+      setStatus(`${result.message}${skipped}`)
+    } catch (error) {
+      setStatus(String(error))
+    } finally {
+      setCompacting(false)
+    }
   }
 
   async function doImport() {
@@ -131,21 +180,62 @@ export function ChatLibrary({ chats, onRefresh }: ChatLibraryProps) {
             <div className="chat-library-head">
               <div>
                 <h2>{active.title}</h2>
-                <p>{active.messages.length} 条消息</p>
+                <p>
+                  {active.messages.length} 条消息 / {compactedCount} 条已整理 / {bookmarkedCount} 条收藏
+                </p>
               </div>
-              <button
-                className="icon-button danger-button"
-                title="删除聊天"
-                type="button"
-                disabled={deletingChatId === active.id}
-                onClick={() => void removeChat(active.id)}
-              >
-                <Trash2 size={16} />
-              </button>
+              <div className="chat-library-tools">
+                <button
+                  className="icon-button"
+                  title="整理长期记忆"
+                  type="button"
+                  disabled={compacting}
+                  onClick={() => void compactMemory()}
+                >
+                  <Sparkles size={16} />
+                </button>
+                <button
+                  className="icon-button danger-button"
+                  title="删除聊天"
+                  type="button"
+                  disabled={deletingChatId === active.id}
+                  onClick={() => void removeChat(active.id)}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
             </div>
+            <section className="chat-memory-panel">
+              <div className="chat-memory-panel__head">
+                <div>
+                  <strong>长期摘要</strong>
+                  <span>会进入模型上下文；已压缩消息不再单独发送。</span>
+                </div>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={savingSummary}
+                  onClick={() => void saveSummary()}
+                >
+                  <Save size={15} />
+                  保存
+                </button>
+              </div>
+              <textarea
+                className="chat-summary-textarea"
+                value={summaryDraft}
+                placeholder="用户身份/偏好：&#10;- 未记录&#10;&#10;和角色的重要关系：&#10;- 未记录"
+                onChange={(event) => setSummaryDraft(event.target.value)}
+              />
+            </section>
             <div className="chat-transcript">
               {active.messages.map((message) => (
-                <div key={message.id} className={`transcript-message transcript-message--${message.role}`}>
+                <div
+                  key={message.id}
+                  className={`transcript-message transcript-message--${message.role} ${
+                    message.compacted ? 'transcript-message--compacted' : ''
+                  }`}
+                >
                   <button
                     className={`bookmark-button ${message.bookmarked ? 'bookmark-button--on' : ''}`}
                     title="书签"
@@ -155,6 +245,12 @@ export function ChatLibrary({ chats, onRefresh }: ChatLibraryProps) {
                     <Bookmark size={14} />
                   </button>
                   <strong>{message.role}</strong>
+                  {message.compacted && (
+                    <span className="transcript-message__badge">
+                      <Archive size={12} />
+                      已纳入长期摘要
+                    </span>
+                  )}
                   <p>{message.content}</p>
                 </div>
               ))}

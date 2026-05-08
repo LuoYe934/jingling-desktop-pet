@@ -1,7 +1,11 @@
-import { BookOpen, Minus, Volume2, VolumeX, Waves } from 'lucide-react'
+import { BookOpen, Heart, Minus, Volume2, VolumeX, Waves } from 'lucide-react'
 import { ChatPanel } from './ChatPanel'
 import { hideCurrentWindow, showTavernWindow, startWindowDrag } from '../lib/tauri'
+import { formatLocalDateTime } from '../lib/time'
 import { usePetStore } from '../stores/petStore'
+import { useEffect, useState } from 'react'
+import type { CSSProperties } from 'react'
+import type { CharacterRelationship } from '../types/tauri'
 
 function isInteractiveTarget(target: EventTarget | null) {
   const element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null
@@ -17,8 +21,42 @@ function stopWindowDrag(event: React.PointerEvent | React.MouseEvent) {
   event.stopPropagation()
 }
 
+function CurrentClock() {
+  const [now, setNow] = useState(() => formatLocalDateTime())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(formatLocalDateTime()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  return <span className="current-clock">{now}</span>
+}
+
+function affectionFill(affection: number) {
+  return Math.min(100, Math.max(0, affection))
+}
+
+function RelationshipStatus({ relationship }: { relationship: CharacterRelationship }) {
+  const fill = affectionFill(relationship.affection)
+
+  return (
+    <p className="relationship-line" title={`好感度 ${relationship.affection} / 100`}>
+      <span className="affection-heart-meter" style={{ '--heart-fill': `${fill}%` } as CSSProperties}>
+        <Heart className="affection-heart-meter__outline" size={16} />
+        <Heart className="affection-heart-meter__fill" size={16} />
+      </span>
+      <span className="relationship-line__text">
+        <strong>{relationship.affection}</strong>
+        <span>{relationship.stageLabel} · {relationship.moodLabel}</span>
+      </span>
+    </p>
+  )
+}
+
 export function ChatWindow() {
   const ttsSettings = usePetStore((state) => state.ttsSettings)
+  const activeRelationship = usePetStore((state) => state.activeRelationship)
+  const relationshipNotice = usePetStore((state) => state.relationshipNotice)
   const setTtsSettings = usePetStore((state) => state.setTtsSettings)
   const VoiceIcon = ttsSettings.enabled ? Volume2 : VolumeX
 
@@ -38,7 +76,9 @@ export function ChatWindow() {
             </div>
             <div>
               <h1>鲸灵</h1>
-              <p>治愈系 DeepSeek 桌面助手</p>
+              {activeRelationship ? <RelationshipStatus relationship={activeRelationship} /> : <p>治愈系 DeepSeek 桌面助手</p>}
+              <CurrentClock />
+              {relationshipNotice && <span className="relationship-notice">{relationshipNotice}</span>}
             </div>
           </div>
           <div

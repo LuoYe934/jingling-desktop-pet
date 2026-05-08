@@ -2,6 +2,7 @@ import { Eye } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { PromptBuildResult, PromptPreset, TavernCharacter, TavernChatListItem } from '../../types/tauri'
 import { previewPrompt } from '../../lib/tauri'
+import { formatLocalDateTime } from '../../lib/time'
 import { estimateMessagesTokens } from '../../lib/tokenEstimate'
 import { usePetStore } from '../../stores/petStore'
 
@@ -34,6 +35,7 @@ export function PromptPreview({ characters, chats, presets }: PromptPreviewProps
         chatId: chatId || undefined,
         presetId: presetId || undefined,
         message,
+        clientNow: `${formatLocalDateTime()} ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
       }),
     )
   }
@@ -110,6 +112,22 @@ export function PromptPreview({ characters, chats, presets }: PromptPreviewProps
             <div>
               <strong>{result.temperature}</strong>
               <span>温度</span>
+            </div>
+            <div>
+              <strong>{result.memorySummaryUsed ? '启用' : '无'}</strong>
+              <span>长期摘要</span>
+            </div>
+            <div>
+              <strong>{result.recentMessageCount}</strong>
+              <span>最近原文</span>
+            </div>
+            <div>
+              <strong>{result.bookmarkedMessageCount}</strong>
+              <span>收藏摘录</span>
+            </div>
+            <div>
+              <strong>{result.compactedMessageCount}</strong>
+              <span>已压缩</span>
             </div>
           </div>
 

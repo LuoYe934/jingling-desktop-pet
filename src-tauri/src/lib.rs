@@ -5,7 +5,7 @@ mod settings;
 mod tavern;
 mod tray;
 
-use deepseek::{cancel_message, send_message, AppState};
+use deepseek::{cancel_message, compact_chat_memory_command, send_message, AppState};
 use piper::{piper_status, synthesize_piper_command};
 use settings::{
     clear_memory_command, get_settings, has_api_key, hide_chat_window, save_api_key,
@@ -16,10 +16,12 @@ use settings::{
 use tavern::{
     bookmark_message, clear_chat_messages, create_chat, delete_chat_command, export_character_card,
     export_chat, export_persona, export_preset, export_worldbook, import_character_card,
-    import_avatar_image, import_chat, import_persona, import_preset, import_worldbook,
-    list_characters, list_chats, list_personas, list_presets, list_providers, list_worldbooks,
-    load_chat_command, preview_prompt, save_character, save_persona, save_preset,
-    save_provider_key, save_worldbook, search_chats, test_worldbook_match, update_chat_settings,
+    get_relationship, get_relationship_preferences, import_avatar_image, import_chat, import_persona,
+    import_preset, import_worldbook, list_characters, list_chats, list_personas, list_presets,
+    list_providers, list_relationships, list_worldbooks, load_chat_command, preview_prompt,
+    reset_relationship, save_character, save_persona, save_preset, save_provider_key,
+    save_chat_summary, save_relationship_preferences, save_worldbook, search_chats,
+    start_relationship_decay_loop, test_worldbook_match, update_chat_settings,
 };
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
@@ -91,10 +93,12 @@ pub fn run() {
                 let _ = tavern.set_always_on_top(true);
                 let _ = tavern.hide();
             }
+            start_relationship_decay_loop(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             send_message,
+            compact_chat_memory_command,
             cancel_message,
             save_api_key,
             has_api_key,
@@ -113,6 +117,11 @@ pub fn run() {
             synthesize_piper_command,
             speak_text_command,
             clear_memory_command,
+            get_relationship,
+            list_relationships,
+            reset_relationship,
+            get_relationship_preferences,
+            save_relationship_preferences,
             list_characters,
             save_character,
             import_avatar_image,
@@ -130,6 +139,7 @@ pub fn run() {
             search_chats,
             bookmark_message,
             clear_chat_messages,
+            save_chat_summary,
             list_worldbooks,
             save_worldbook,
             import_worldbook,

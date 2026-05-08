@@ -87,6 +87,7 @@ struct ChatChunkPayload {
 struct ChatDonePayload {
     content: String,
     chat_id: String,
+    assistant_created_at: String,
     prompt_tokens: Option<u32>,
     completion_tokens: Option<u32>,
     total_tokens: Option<u32>,
@@ -163,6 +164,8 @@ pub async fn send_message(
     character_id: Option<String>,
     preset_id: Option<String>,
     provider_id: Option<String>,
+    client_now: Option<String>,
+    user_created_at: Option<String>,
 ) -> Result<(), String> {
     let user_message = message.trim().to_string();
     if user_message.is_empty() {
@@ -177,6 +180,7 @@ pub async fn send_message(
         preset_id,
         provider_id,
         model.clone(),
+        client_now,
     )?;
     let provider = tavern::provider_by_id(Some(&prompt.provider_id))?;
     let api_key = tavern::read_provider_api_key(&provider.id)?;
@@ -295,8 +299,43 @@ pub async fn send_message(
     }
 
     let final_reply = tavern::compact_reply(&assistant_reply, prompt.reply_limit);
+    let assistant_created_at = tavern::now_stamp_public();
     if !final_reply.is_empty() {
-        tavern::append_exchange(&app, &prompt, &user_message, &final_reply)?;
+        tavern::append_exchange(
+            &app,
+            &prompt,
+            &user_message,
+            &final_reply,
+            user_created_at.as_deref(),
+            &assistant_created_at,
+        )?;
+        let score_app = app.clone();
+        let score_client = state.client.clone();
+        let score_prompt = prompt.clone();
+        let score_user_message = user_message.clone();
+        let score_reply = final_reply.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = tavern::judge_relationship_after_exchange(
+                score_app,
+                score_client,
+                score_prompt,
+                score_user_message,
+                score_reply,
+            )
+            .await;
+        });
+        let compact_app = app.clone();
+        let compact_client = state.client.clone();
+        let compact_prompt = prompt.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = tavern::compact_chat_memory_for_prompt(
+                compact_app,
+                compact_client,
+                compact_prompt,
+                false,
+            )
+            .await;
+        });
     }
 
     let _ = app.emit(
@@ -304,12 +343,22 @@ pub async fn send_message(
         ChatDonePayload {
             content: final_reply,
             chat_id: prompt.chat_id,
+            assistant_created_at,
             prompt_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_tokens),
             completion_tokens: token_usage.as_ref().and_then(|usage| usage.completion_tokens),
             total_tokens: token_usage.as_ref().and_then(|usage| usage.total_tokens),
         },
     );
     Ok(())
+}
+
+#[tauri::command]
+pub async fn compact_chat_memory_command(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    chat_id: String,
+) -> Result<tavern::ChatMemoryCompactResult, String> {
+    tavern::compact_chat_memory(app, state.client.clone(), chat_id, true).await
 }
 
 #[tauri::command]
