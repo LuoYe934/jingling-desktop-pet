@@ -215,6 +215,7 @@ export interface ChatDonePayload {
   content: string
   chatId: string
   assistantCreatedAt: string
+  cancelled?: boolean
   promptTokens?: number | null
   completionTokens?: number | null
   totalTokens?: number | null
@@ -370,4 +371,7 @@ export interface PromptBuildResult {
   compactedMessageCount: number
   memoryCardCount: number
   memoryCardsUsed: MemoryCard[]
+  stablePrefixTokens: number
+  dynamicContextTokens: number
+  promptLayoutVersion: string
 }

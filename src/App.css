@@ -34,8 +34,8 @@
   position: absolute;
   left: 50%;
   top: 49%;
-  width: min(68%, 176px);
-  height: min(72%, 218px);
+  width: 76%;
+  height: 78%;
   transform: translate(-50%, -50%);
   z-index: 1;
   border: 0;
@@ -1588,7 +1588,7 @@
 
 .memory-filters {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -1597,7 +1597,45 @@
 }
 
 .memory-list-item {
-  min-height: 64px;
+  min-height: 88px;
+  min-width: 0;
+  grid-template-rows: minmax(0, auto) auto;
+  align-content: start;
+  gap: 7px;
+  padding: 12px 11px;
+  overflow: hidden;
+}
+
+.memory-list-item__title,
+.memory-list-item__meta {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.memory-list-item__title {
+  display: -webkit-box !important;
+  max-height: 44px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.45;
+  white-space: normal !important;
+  text-overflow: clip !important;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.memory-list-item__meta {
+  display: block !important;
+  max-height: 19px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.35;
+  white-space: nowrap !important;
+  text-overflow: ellipsis;
 }
 
 .memory-editor {

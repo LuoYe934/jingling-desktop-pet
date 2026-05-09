@@ -12,6 +12,13 @@ interface PromptPreviewProps {
   presets: PromptPreset[]
 }
 
+function promptMessageLabel(index: number, role: string) {
+  if (index === 0 && role === 'system') return '缓存友好前缀'
+  if (index === 1 && role === 'system') return '动态上下文'
+  if (role === 'user') return '本轮输入'
+  return '聊天记录'
+}
+
 export function PromptPreview({ characters, chats, presets }: PromptPreviewProps) {
   const [characterId, setCharacterId] = useState('')
   const [chatId, setChatId] = useState('')
@@ -133,6 +140,18 @@ export function PromptPreview({ characters, chats, presets }: PromptPreviewProps
               <strong>{result.memoryCardCount}</strong>
               <span>记忆卡片</span>
             </div>
+            <div>
+              <strong>{result.stablePrefixTokens}</strong>
+              <span>稳定前缀 tokens</span>
+            </div>
+            <div>
+              <strong>{result.dynamicContextTokens}</strong>
+              <span>动态上下文 tokens</span>
+            </div>
+            <div>
+              <strong>{result.promptLayoutVersion}</strong>
+              <span>Prompt 布局</span>
+            </div>
           </div>
 
           <div className="match-strip">
@@ -156,7 +175,9 @@ export function PromptPreview({ characters, chats, presets }: PromptPreviewProps
           <div className="prompt-message-list">
             {result.messages.map((item, index) => (
               <article key={`${item.role}-${index}`} className="prompt-message">
-                <strong>{item.role}</strong>
+                <strong>
+                  {item.role} · {promptMessageLabel(index, item.role)}
+                </strong>
                 <pre>{item.content}</pre>
               </article>
             ))}

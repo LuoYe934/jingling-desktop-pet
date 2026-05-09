@@ -27,3 +27,4 @@ Get-ChildItem -Path $qaRelease -File | ForEach-Object {
 Write-Host "Promoted QA build to release target:"
 Write-Host "  From: $qaRelease"
 Write-Host "  To:   $targetRelease"
+Write-Host "Run promoted release with: npm run start:pet"

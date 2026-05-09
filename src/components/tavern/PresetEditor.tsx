@@ -124,6 +124,9 @@ export function PresetEditor({ presets, onSave, onImport, onExport }: PresetEdit
             上下文条数
             <input
               type="number"
+              min={2}
+              max={200}
+              step={1}
               value={draft.contextMessages}
               onChange={(event) => update('contextMessages', Number(event.target.value))}
             />

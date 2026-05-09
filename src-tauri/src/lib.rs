@@ -11,7 +11,7 @@ use deepseek::{
 };
 use piper::{piper_status, synthesize_piper_command};
 use settings::{
-    clear_memory_command, get_settings, has_api_key, hide_chat_window, save_api_key,
+    apply_saved_pet_size, clear_memory_command, get_settings, has_api_key, hide_chat_window, save_api_key,
     hide_tavern_window, set_always_on_top, set_pet_scale, show_chat_window, show_tavern_window,
     speak_text_command, toggle_autostart, toggle_chat_window, toggle_tavern_window, update_settings,
     TtsPreviewState,
@@ -26,7 +26,7 @@ use tavern::{
     preview_prompt, reset_relationship, save_character, save_memory_card, save_persona,
     save_preset, save_provider_key, save_chat_summary, save_relationship_preferences,
     save_worldbook, search_chats, archive_memory_card, confirm_memory_card, delete_memory_card,
-    start_relationship_decay_loop, test_worldbook_match, update_chat_settings,
+    test_worldbook_match, update_chat_settings,
 };
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
@@ -87,6 +87,7 @@ pub fn run() {
             if let Some(pet) = app.get_webview_window("pet") {
                 let _ = pet.set_always_on_top(true);
                 let _ = pet.set_skip_taskbar(true);
+                let _ = apply_saved_pet_size(app.handle());
                 let _ = pet.show();
             }
             if let Some(chat) = app.get_webview_window("chat") {
@@ -98,7 +99,6 @@ pub fn run() {
                 let _ = tavern.set_always_on_top(true);
                 let _ = tavern.hide();
             }
-            start_relationship_decay_loop(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

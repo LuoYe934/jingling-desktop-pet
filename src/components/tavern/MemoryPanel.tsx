@@ -44,12 +44,21 @@ const scopes = Object.keys(scopeLabels) as MemoryCardScope[]
 const types = Object.keys(typeLabels) as MemoryCardType[]
 const statuses = Object.keys(statusLabels) as MemoryCardStatus[]
 
-function emptyCard(characterId?: string, chatId?: string): MemoryCard {
+type MemoryScopeFilter = '' | 'current' | MemoryCardScope
+
+interface MemoryFilters {
+  scope: MemoryScopeFilter
+  type: string
+  status: string
+  query: string
+}
+
+function emptyCard(characterId?: string): MemoryCard {
   return {
     id: '',
     scope: characterId ? 'character' : 'global',
     characterId: characterId || null,
-    chatId: chatId || null,
+    chatId: null,
     type: 'note',
     content: '',
     importance: 5,
@@ -66,19 +75,68 @@ function compactTime(value: string) {
   return formatLocalDateTime(value) || '刚刚'
 }
 
-function matchesFilter(card: MemoryCard, filters: {
-  scope: string
-  type: string
-  status: string
-  query: string
-}) {
+function characterName(characters: TavernCharacter[], characterId?: string | null) {
+  if (!characterId) return '未绑定角色'
+  return characters.find((character) => character.id === characterId)?.name || characterId
+}
+
+function chatTitle(chats: TavernChatListItem[], chatId?: string | null) {
+  if (!chatId) return '未绑定聊天'
+  return chats.find((chat) => chat.id === chatId)?.title || chatId
+}
+
+function scopeDetail(card: MemoryCard, characters: TavernCharacter[], chats: TavernChatListItem[]) {
+  if (card.scope === 'global') return '全局'
+  if (card.scope === 'character') return `角色：${characterName(characters, card.characterId)}`
+  const chat = chats.find((item) => item.id === card.chatId)
+  const characterId = card.characterId || chat?.characterId || null
+  return `聊天：${chatTitle(chats, card.chatId)} / 角色：${characterName(characters, characterId)}`
+}
+
+function isCurrentCharacterRelated(card: MemoryCard, characterId: string, chats: TavernChatListItem[]) {
+  if (card.scope === 'global') return true
+  if (!characterId) return false
+  if (card.scope === 'character') return card.characterId === characterId
+  const chat = chats.find((item) => item.id === card.chatId)
+  return card.characterId === characterId || chat?.characterId === characterId
+}
+
+function memoryCardTitle(card: MemoryCard, characters: TavernCharacter[], chats: TavernChatListItem[]) {
+  return [
+    card.content,
+    `${statusLabels[card.status]} / ${typeLabels[card.type]} / ${scopeDetail(card, characters, chats)} / 重要度 ${card.importance}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+function matchesFilter(
+  card: MemoryCard,
+  filters: MemoryFilters,
+  selectedCharacterId: string,
+  characters: TavernCharacter[],
+  chats: TavernChatListItem[],
+) {
   const query = filters.query.trim().toLowerCase()
+  const scopeMatches =
+    !filters.scope ||
+    (filters.scope === 'current'
+      ? isCurrentCharacterRelated(card, selectedCharacterId, chats)
+      : card.scope === filters.scope)
   return (
-    (!filters.scope || card.scope === filters.scope) &&
+    scopeMatches &&
     (!filters.type || card.type === filters.type) &&
     (!filters.status || card.status === filters.status) &&
     (!query ||
-      [card.content, card.characterId, card.chatId, card.sourceMessageIds.join(' ')]
+      [
+        card.content,
+        card.characterId,
+        card.chatId,
+        scopeDetail(card, characters, chats),
+        typeLabels[card.type],
+        statusLabels[card.status],
+        card.sourceMessageIds.join(' '),
+      ]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -96,29 +154,46 @@ export function MemoryPanel({
   onConfirm,
 }: MemoryPanelProps) {
   const [selectedId, setSelectedId] = useState('')
-  const [draft, setDraft] = useState<MemoryCard>(() => emptyCard(characters[0]?.id, chats[0]?.id))
+  const [draft, setDraft] = useState<MemoryCard>(() => emptyCard(characters[0]?.id))
   const [isCreating, setIsCreating] = useState(false)
-  const [filters, setFilters] = useState({ scope: '', type: '', status: '', query: '' })
-  const filteredCards = cards.filter((card) => matchesFilter(card, filters))
+  const [filters, setFilters] = useState<MemoryFilters>({ scope: '', type: '', status: '', query: '' })
+  const [selectedCharacterId, setSelectedCharacterId] = useState(characters[0]?.id || '')
+  const filteredCards = cards.filter((card) =>
+    matchesFilter(card, filters, selectedCharacterId, characters, chats),
+  )
+  const chatsForDraftCharacter = draft.characterId
+    ? chats.filter((chat) => chat.characterId === draft.characterId)
+    : chats
+  const activeCards = cards.filter((card) => card.status === 'active')
+  const pendingCards = cards.filter((card) => card.status === 'pending')
+  const archivedCards = cards.filter((card) => card.status === 'archived')
+
+  useEffect(() => {
+    if (!selectedCharacterId && characters[0]?.id) {
+      setSelectedCharacterId(characters[0].id)
+    }
+  }, [characters, selectedCharacterId])
 
   useEffect(() => {
     if (isCreating) return
     if (selectedId) {
       const selected = cards.find((card) => card.id === selectedId)
-      if (selected) {
+      if (selected && matchesFilter(selected, filters, selectedCharacterId, characters, chats)) {
         setDraft(selected)
         return
       }
     }
-    const nextFilteredCards = cards.filter((card) => matchesFilter(card, filters))
+    const nextFilteredCards = cards.filter((card) =>
+      matchesFilter(card, filters, selectedCharacterId, characters, chats),
+    )
     if (nextFilteredCards[0]) {
       setSelectedId(nextFilteredCards[0].id)
       setDraft(nextFilteredCards[0])
       return
     }
     setSelectedId('')
-    setDraft(emptyCard(characters[0]?.id, chats[0]?.id))
-  }, [cards, characters, chats, filters, isCreating, selectedId])
+    setDraft(emptyCard(characters[0]?.id))
+  }, [cards, characters, chats, filters, isCreating, selectedCharacterId, selectedId])
 
   function patchDraft(patch: Partial<MemoryCard>) {
     setDraft((current) => {
@@ -132,7 +207,13 @@ export function MemoryPanel({
       } else if (patch.scope === 'chat') {
         const chat = chats.find((item) => item.id === next.chatId) || chats[0]
         next.chatId = chat?.id || null
-        next.characterId = next.characterId || chat?.characterId || characters[0]?.id || null
+        next.characterId = chat?.characterId || next.characterId || characters[0]?.id || null
+      } else if (patch.chatId && next.scope === 'chat') {
+        const chat = chats.find((item) => item.id === patch.chatId)
+        next.characterId = chat?.characterId || next.characterId || characters[0]?.id || null
+      } else if (patch.characterId && next.scope === 'chat') {
+        const chat = chats.find((item) => item.id === next.chatId && item.characterId === patch.characterId)
+        next.chatId = chat?.id || chats.find((item) => item.characterId === patch.characterId)?.id || null
       }
       return next
     })
@@ -141,7 +222,7 @@ export function MemoryPanel({
   function newCard() {
     setIsCreating(true)
     setSelectedId('')
-    setDraft(emptyCard(characters[0]?.id, chats[0]?.id))
+    setDraft(emptyCard(characters[0]?.id))
   }
 
   async function saveDraft() {
@@ -184,15 +265,27 @@ export function MemoryPanel({
           </select>
           <select
             value={filters.scope}
-            onChange={(event) => setFilters((current) => ({ ...current, scope: event.target.value }))}
+            onChange={(event) =>
+              setFilters((current) => ({ ...current, scope: event.target.value as MemoryScopeFilter }))
+            }
           >
             <option value="">全部范围</option>
+            <option value="current">当前角色相关</option>
             {scopes.map((scope) => (
               <option key={scope} value={scope}>
                 {scopeLabels[scope]}
               </option>
             ))}
           </select>
+          {filters.scope === 'current' && (
+            <select value={selectedCharacterId} onChange={(event) => setSelectedCharacterId(event.target.value)}>
+              {characters.map((character) => (
+                <option key={character.id} value={character.id}>
+                  {character.name}
+                </option>
+              ))}
+            </select>
+          )}
           <select
             value={filters.type}
             onChange={(event) => setFilters((current) => ({ ...current, type: event.target.value }))}
@@ -211,16 +304,18 @@ export function MemoryPanel({
               key={card.id}
               className={`tavern-list-item memory-list-item ${card.id === selectedId ? 'tavern-list-item--active' : ''}`}
               type="button"
+              title={memoryCardTitle(card, characters, chats)}
               onClick={() => {
                 setIsCreating(false)
                 setSelectedId(card.id)
                 setDraft(card)
               }}
             >
-              <span>{card.content}</span>
-              <small>
-                {statusLabels[card.status]} / {typeLabels[card.type]} / {scopeLabels[card.scope]} / 重要度 {card.importance}
-              </small>
+              <span className="memory-list-item__title">{card.content}</span>
+              <span className="memory-list-item__meta">
+                {statusLabels[card.status]} / {typeLabels[card.type]} / {scopeDetail(card, characters, chats)} / 重要度{' '}
+                {card.importance}
+              </span>
             </button>
           ))
         ) : (
@@ -275,15 +370,15 @@ export function MemoryPanel({
 
         <div className="metric-grid">
           <div>
-            <strong>{cards.filter((card) => card.status === 'active').length}</strong>
+            <strong>{activeCards.length}</strong>
             <span>生效卡片</span>
           </div>
           <div>
-            <strong>{cards.filter((card) => card.status === 'pending').length}</strong>
+            <strong>{pendingCards.length}</strong>
             <span>待确认</span>
           </div>
           <div>
-            <strong>{cards.filter((card) => card.status === 'archived').length}</strong>
+            <strong>{archivedCards.length}</strong>
             <span>已停用</span>
           </div>
         </div>
@@ -341,7 +436,8 @@ export function MemoryPanel({
             <label>
               聊天
               <select value={draft.chatId || ''} onChange={(event) => patchDraft({ chatId: event.target.value || null })}>
-                {chats.map((chat) => (
+                {!chatsForDraftCharacter.length && <option value="">暂无聊天</option>}
+                {chatsForDraftCharacter.map((chat) => (
                   <option key={chat.id} value={chat.id}>
                     {chat.title}
                   </option>

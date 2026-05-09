@@ -20,6 +20,7 @@ dist-ssr
 # Local QA / generated outputs
 output
 .playwright-cli
+.external-cards
 codex-*.log
 vite-*.log
 vite-*.err.log
@@ -27,6 +28,7 @@ vite-*.err.log
 # Rust/Tauri build outputs
 src-tauri/target
 src-tauri/target-qa
+src-tauri/target-cachecheck
 src-tauri/gen/schemas
 
 # Generated audio previews
@@ -42,3 +44,5 @@ src-tauri/resources/piper/voices/*.wav
 *.njsproj
 *.sln
 *.sw?
+
+.vercel

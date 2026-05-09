@@ -91,7 +91,6 @@ function sourceLabel(source: string) {
     local: '本地规则',
     model: 'AI评分',
     recovery: '连续恢复',
-    timeDecay: '时间流逝',
     system: '系统',
   }
   return labels[source] ?? (source || '本地规则')
@@ -262,10 +261,6 @@ export function RelationshipPanel({ characters, relationships, onReset }: Relati
             <span>连续温和互动</span>
           </div>
         </div>
-        <p className="relationship-subtle">
-          上次时间流逝扣减：{relationship.lastPassiveDecayAt ? formatStamp(relationship.lastPassiveDecayAt) : '尚未发生'}
-        </p>
-
         <details className="relationship-rules">
           <summary>评分说明</summary>
           <p>本地规则：感谢、夸奖、关心、道歉、辱骂、威胁等明确表达会直接评分，不请求模型。</p>

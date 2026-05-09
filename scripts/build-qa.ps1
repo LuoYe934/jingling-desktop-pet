@@ -13,4 +13,7 @@ if ($runningQa) {
 
 $env:CARGO_TARGET_DIR = $targetQa
 Write-Host "Building QA executable into: $targetQa"
+Write-Host "This does not update the release executable in src-tauri\target\release."
+Write-Host "Run QA with: npm run start:pet:qa"
+Write-Host "Promote QA to release after verification with: npm run tauri:promote"
 npx tauri build --no-bundle

@@ -68,13 +68,18 @@ export function PetCanvas() {
         host.appendChild(app.canvas)
         const model = await live2d.Live2DModel.from(MODEL_PATH)
         model.anchor?.set?.(0.5, 0.5)
-        model.position?.set?.(app.screen.width / 2, app.screen.height / 2)
-        const baseScale = Math.min(app.screen.width / model.width, app.screen.height / model.height) * 0.74
-        model.scale?.set?.(baseScale)
+        const fitModel = () => {
+          const naturalWidth = model.width / (model.scale?.x || 1)
+          const naturalHeight = model.height / (model.scale?.y || 1)
+          const baseScale = Math.min(app.screen.width / naturalWidth, app.screen.height / naturalHeight) * 0.74
+          model.position?.set?.(app.screen.width / 2, app.screen.height / 2)
+          model.scale?.set?.(baseScale)
+        }
+        fitModel()
         app.stage.addChild(model)
 
         const resize = () => {
-          model.position?.set?.(app.screen.width / 2, app.screen.height / 2)
+          fitModel()
         }
         window.addEventListener('resize', resize)
         destroy = () => {

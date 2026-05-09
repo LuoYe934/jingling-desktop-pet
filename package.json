@@ -10,12 +10,15 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-qa.ps1",
+    "tauri:build": "tauri build --no-bundle",
     "tauri:build:qa": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-qa.ps1",
     "tauri:build:release": "tauri build --no-bundle",
     "tauri:promote": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/promote-qa-to-release.ps1",
     "tauri:bundle": "tauri build",
-    "start:pet": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-pet.ps1"
+    "start:pet": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-pet.ps1 -Channel release",
+    "start:pet:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-pet.ps1 -Channel release",
+    "start:pet:qa": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-pet.ps1 -Channel qa",
+    "start:pet:auto": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-pet.ps1 -Channel auto"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

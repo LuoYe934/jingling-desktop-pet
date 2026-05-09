@@ -574,9 +574,9 @@ export function ChatPanel() {
           return [...next, { id: makeId(), role: 'assistant', content, streaming: true }]
         })
       },
-      onDone: ({ content, chatId, completionTokens, assistantCreatedAt }) => {
+      onDone: ({ content, chatId, completionTokens, assistantCreatedAt, cancelled }) => {
         setIsStreaming(false)
-        setMotion('happy')
+        setMotion(cancelled ? 'idle' : 'happy')
         if (chatId) {
           saveLastChatId(chatId)
           setActiveChatId(chatId)
@@ -586,16 +586,22 @@ export function ChatPanel() {
         const replyTokens = hasApiCompletionTokens ? completionTokens : estimateTokenCount(content)
         const tokenSource = hasApiCompletionTokens ? 'api' : 'estimate'
         setLastReplyTokens(replyTokens)
-        speakAssistantReply(content, chatId)
+        if (!cancelled) {
+          speakAssistantReply(content, chatId)
+        }
         setMessages((current) => {
           const next = [...current]
           const last = next[next.length - 1]
           if (last?.role === 'assistant' && last.streaming) {
+            const finalContent = content || last.content
+            if (cancelled && !finalContent.trim()) {
+              return next.slice(0, -1)
+            }
             next[next.length - 1] = {
               ...last,
-              content: content || last.content,
+              content: finalContent,
               streaming: false,
-              tokenCount: replyTokens,
+              tokenCount: hasApiCompletionTokens ? replyTokens : estimateTokenCount(finalContent),
               tokenSource,
               createdAt: assistantCreatedAt,
             }
@@ -606,7 +612,9 @@ export function ChatPanel() {
           }
           return next
         })
-        window.setTimeout(() => setMotion('idle'), 1200)
+        if (!cancelled) {
+          window.setTimeout(() => setMotion('idle'), 1200)
+        }
       },
       onError: ({ message }) => {
         setIsStreaming(false)
@@ -789,6 +797,18 @@ export function ChatPanel() {
   async function stopCurrentResponse() {
     if (!isStreaming) return
     await cancelMessage().catch(() => undefined)
+    if (!runningInTauri()) {
+      setMessages((current) => {
+        const next = [...current]
+        const last = next[next.length - 1]
+        if (last?.role === 'assistant' && last.streaming) {
+          if (!last.content.trim()) return next.slice(0, -1)
+          next[next.length - 1] = { ...last, streaming: false }
+          return next
+        }
+        return current
+      })
+    }
     setIsStreaming(false)
     setMotion('idle')
   }

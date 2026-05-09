@@ -86,6 +86,11 @@ fn apply_pet_size(app: &AppHandle, scale: f64) -> Result<(), String> {
         .map_err(|err| format!("调整桌宠大小失败: {err}"))
 }
 
+pub fn apply_saved_pet_size(app: &AppHandle) -> Result<(), String> {
+    let settings = load_settings(app)?;
+    apply_pet_size(app, settings.scale)
+}
+
 fn show_window(app: &AppHandle, label: &str) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(label) {
         window.show().map_err(|err| format!("显示窗口失败: {err}"))?;

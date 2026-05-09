@@ -88,6 +88,7 @@ struct ChatDonePayload {
     content: String,
     chat_id: String,
     assistant_created_at: String,
+    cancelled: bool,
     prompt_tokens: Option<u32>,
     completion_tokens: Option<u32>,
     total_tokens: Option<u32>,
@@ -251,7 +252,6 @@ pub async fn send_message(
         tokio::select! {
             _ = token.cancelled() => {
                 cancelled = true;
-                emit_error(&app, "已停止本次回复。");
                 break;
             }
             maybe_chunk = stream.next() => {
@@ -292,10 +292,6 @@ pub async fn send_message(
     {
         let mut guard = state.cancel_token.lock().await;
         *guard = None;
-    }
-
-    if cancelled {
-        return Ok(());
     }
 
     let final_reply = tavern::compact_reply(&assistant_reply, prompt.reply_limit);
@@ -360,6 +356,7 @@ pub async fn send_message(
             content: final_reply,
             chat_id: prompt.chat_id,
             assistant_created_at,
+            cancelled,
             prompt_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_tokens),
             completion_tokens: token_usage.as_ref().and_then(|usage| usage.completion_tokens),
             total_tokens: token_usage.as_ref().and_then(|usage| usage.total_tokens),
@@ -392,4 +389,22 @@ pub async fn cancel_message(state: State<'_, AppState>) -> Result<(), String> {
         token.cancel();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_sse_event;
+
+    #[test]
+    fn take_sse_event_splits_lf_delimited_events() {
+        let (event, rest) = take_sse_event("data: one\n\ndata: two\n\n").expect("event");
+
+        assert_eq!(event, "data: one");
+        assert_eq!(rest, "data: two\n\n");
+    }
+
+    #[test]
+    fn take_sse_event_waits_for_complete_event() {
+        assert!(take_sse_event("data: partial").is_none());
+    }
 }
