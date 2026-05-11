@@ -3,19 +3,24 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::Child,
     sync::Mutex,
 };
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(mobile)))]
+use std::process::{Command, Stdio};
+#[cfg(all(target_os = "windows", not(mobile)))]
 use std::os::windows::process::CommandExt;
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, Size, State};
+#[cfg(not(mobile))]
+use tauri::{LogicalSize, Size};
+use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(not(mobile))]
 use tauri_plugin_autostart::ManagerExt;
 
 const PET_BASE_WIDTH: f64 = 300.0;
 const PET_BASE_HEIGHT: f64 = 360.0;
 const PET_MIN_SCALE: f64 = 0.35;
 const PET_MAX_SCALE: f64 = 3.2;
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(mobile)))]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Default)]
@@ -72,6 +77,7 @@ fn emit_settings_changed(app: &AppHandle, settings: &AppSettings) {
     let _ = app.emit("settings:changed", settings.clone());
 }
 
+#[cfg(not(mobile))]
 fn apply_pet_size(app: &AppHandle, scale: f64) -> Result<(), String> {
     let Some(window) = app.get_webview_window("pet") else {
         return Ok(());
@@ -86,11 +92,13 @@ fn apply_pet_size(app: &AppHandle, scale: f64) -> Result<(), String> {
         .map_err(|err| format!("调整桌宠大小失败: {err}"))
 }
 
+#[cfg(not(mobile))]
 pub fn apply_saved_pet_size(app: &AppHandle) -> Result<(), String> {
     let settings = load_settings(app)?;
     apply_pet_size(app, settings.scale)
 }
 
+#[cfg(not(mobile))]
 fn show_window(app: &AppHandle, label: &str) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(label) {
         window.show().map_err(|err| format!("显示窗口失败: {err}"))?;
@@ -99,6 +107,7 @@ fn show_window(app: &AppHandle, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(mobile))]
 fn hide_window(app: &AppHandle, label: &str) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(label) {
         window.hide().map_err(|err| format!("隐藏窗口失败: {err}"))?;
@@ -106,6 +115,7 @@ fn hide_window(app: &AppHandle, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(mobile))]
 fn toggle_window(app: &AppHandle, label: &str) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(label) {
         if window.is_visible().unwrap_or(false) {
@@ -141,7 +151,9 @@ pub fn update_settings(app: AppHandle, settings: AppSettings) -> Result<AppSetti
         ..settings
     };
     save_settings(&app, &next)?;
+    #[cfg(not(mobile))]
     apply_pet_size(&app, next.scale)?;
+    #[cfg(not(mobile))]
     for label in ["pet", "chat", "tavern"] {
         if let Some(window) = app.get_webview_window(label) {
             window
@@ -159,12 +171,14 @@ pub fn set_pet_scale(app: AppHandle, scale: f64) -> Result<f64, String> {
     let mut settings = load_settings(&app)?;
     settings.scale = normalized;
     save_settings(&app, &settings)?;
+    #[cfg(not(mobile))]
     apply_pet_size(&app, normalized)?;
     emit_settings_changed(&app, &settings);
     Ok(normalized)
 }
 
 #[tauri::command]
+#[cfg(not(mobile))]
 pub fn set_always_on_top(app: AppHandle, enabled: bool) -> Result<bool, String> {
     for label in ["pet", "chat", "tavern"] {
         if let Some(window) = app.get_webview_window(label) {
@@ -181,6 +195,17 @@ pub fn set_always_on_top(app: AppHandle, enabled: bool) -> Result<bool, String> 
 }
 
 #[tauri::command]
+#[cfg(mobile)]
+pub fn set_always_on_top(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    let mut settings = load_settings(&app)?;
+    settings.always_on_top = enabled;
+    save_settings(&app, &settings)?;
+    emit_settings_changed(&app, &settings);
+    Ok(enabled)
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
 pub fn toggle_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
     let autostart = app.autolaunch();
     if enabled {
@@ -198,36 +223,98 @@ pub fn toggle_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
 }
 
 #[tauri::command]
+#[cfg(mobile)]
+pub fn toggle_autostart(_app: AppHandle, _enabled: bool) -> Result<bool, String> {
+    Err("Autostart is not supported on mobile.".to_string())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
 pub fn show_chat_window(app: AppHandle) -> Result<(), String> {
     show_window(&app, "chat")
 }
 
 #[tauri::command]
+#[cfg(mobile)]
+pub fn show_chat_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
 pub fn hide_chat_window(app: AppHandle) -> Result<(), String> {
     hide_window(&app, "chat")
 }
 
 #[tauri::command]
+#[cfg(mobile)]
+pub fn hide_chat_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
 pub fn toggle_chat_window(app: AppHandle) -> Result<(), String> {
     toggle_window(&app, "chat")
 }
 
 #[tauri::command]
+#[cfg(mobile)]
+pub fn toggle_chat_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
 pub fn show_tavern_window(app: AppHandle) -> Result<(), String> {
     show_window(&app, "tavern")
 }
 
 #[tauri::command]
+#[cfg(mobile)]
+pub fn show_tavern_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
 pub fn hide_tavern_window(app: AppHandle) -> Result<(), String> {
     hide_window(&app, "tavern")
 }
 
 #[tauri::command]
+#[cfg(mobile)]
+pub fn hide_tavern_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
 pub fn toggle_tavern_window(app: AppHandle) -> Result<(), String> {
     toggle_window(&app, "tavern")
 }
 
 #[tauri::command]
+#[cfg(mobile)]
+pub fn toggle_tavern_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(mobile)]
+pub fn speak_text_command(
+    _state: State<'_, TtsPreviewState>,
+    _text: String,
+    _voice_name: Option<String>,
+    _lang: Option<String>,
+    _rate: f64,
+    _volume: f64,
+) -> Result<(), String> {
+    Err("System TTS is not supported on mobile.".to_string())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
 pub fn speak_text_command(
     state: State<'_, TtsPreviewState>,
     text: String,

@@ -98,6 +98,21 @@ export interface RelationshipIdleLine {
   note: string
 }
 
+export interface RelationshipKeywordRule {
+  id: string
+  keyword: string
+  weight: number
+  enabled: boolean
+  note: string
+}
+
+export interface RelationshipRulePreferences {
+  initialized: boolean
+  enabled: boolean
+  positiveKeywords: RelationshipKeywordRule[]
+  negativeKeywords: RelationshipKeywordRule[]
+}
+
 export interface HolidayRule {
   id: string
   name: string
@@ -114,6 +129,7 @@ export interface RelationshipPreferences {
   characterId: string
   nicknameSettings: RelationshipNicknameSettings
   idleLines: RelationshipIdleLine[]
+  rulePreferences: RelationshipRulePreferences
   holidays: HolidayRule[]
 }
 
@@ -143,6 +159,7 @@ export interface CharacterRelationship {
   lastWarmInteractionAt: string
   nicknameSettings: RelationshipNicknameSettings
   idleLines: RelationshipIdleLine[]
+  rulePreferences: RelationshipRulePreferences
   updatedAt: string
 }
 
@@ -219,6 +236,26 @@ export interface ChatDonePayload {
   promptTokens?: number | null
   completionTokens?: number | null
   totalTokens?: number | null
+  promptCacheHitTokens?: number | null
+  promptCacheMissTokens?: number | null
+  promptCacheHitRate?: number | null
+}
+
+export interface ChatCompactedPayload {
+  chatId: string
+  compactedCount: number
+  skippedBookmarkedCount: number
+  summaryUpdated: boolean
+  message: string
+  trigger: string
+  activeMessageCount: number
+  activeTokenEstimate: number
+  thresholdTokens: number
+}
+
+export interface ChatCompactErrorPayload {
+  chatId: string
+  message: string
 }
 
 export interface ChatErrorPayload {
@@ -295,6 +332,10 @@ export interface ChatMemoryCompactResult {
   skippedBookmarkedCount: number
   summaryUpdated: boolean
   message: string
+  trigger: string
+  activeMessageCount: number
+  activeTokenEstimate: number
+  thresholdTokens: number
 }
 
 export interface WorldbookEntry {
@@ -338,8 +379,17 @@ export interface ProviderConfig {
   providerType: string
   baseUrl: string
   defaultModel: string
+  authType: 'bearer' | 'api-key' | 'none'
+  maxTokensField: 'max_tokens' | 'max_completion_tokens'
+  builtIn: boolean
+  editable: boolean
   enabled: boolean
   keySaved: boolean
+}
+
+export interface ProviderConnectionTestResult {
+  ok: boolean
+  message: string
 }
 
 export interface WorldbookMatch {
@@ -374,4 +424,7 @@ export interface PromptBuildResult {
   stablePrefixTokens: number
   dynamicContextTokens: number
   promptLayoutVersion: string
+  promptCacheHitTokens?: number | null
+  promptCacheMissTokens?: number | null
+  promptCacheHitRate?: number | null
 }

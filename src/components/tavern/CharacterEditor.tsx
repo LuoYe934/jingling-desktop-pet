@@ -2,12 +2,13 @@ import { Download, FileUp, Heart, ImagePlus, Plus, Save } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { pickAvatarFile } from '../../lib/tauri'
 import { defaultRelationshipStagePrompts, relationshipStageLabels } from '../../types/tauri'
-import type { CharacterRelationship, PromptPreset, RelationshipStage, TavernCharacter } from '../../types/tauri'
+import type { CharacterRelationship, PromptPreset, ProviderConfig, RelationshipStage, TavernCharacter } from '../../types/tauri'
 import { AvatarBadge } from '../AvatarBadge'
 
 interface CharacterEditorProps {
   characters: TavernCharacter[]
   presets: PromptPreset[]
+  providers: ProviderConfig[]
   relationships: CharacterRelationship[]
   onSave: (character: TavernCharacter) => Promise<TavernCharacter | undefined>
   onImport: (path: string) => Promise<void>
@@ -60,7 +61,7 @@ function affectionTone(affection: number) {
   return 'neutral'
 }
 
-export function CharacterEditor({ characters, presets, relationships, onSave, onImport, onExport }: CharacterEditorProps) {
+export function CharacterEditor({ characters, presets, providers, relationships, onSave, onImport, onExport }: CharacterEditorProps) {
   const [selectedId, setSelectedId] = useState('')
   const [draft, setDraft] = useState<TavernCharacter>(emptyCharacter())
   const [isCreating, setIsCreating] = useState(false)
@@ -76,6 +77,14 @@ export function CharacterEditor({ characters, presets, relationships, onSave, on
     }
     return enabled.length ? enabled : presets
   }, [draft.defaultPresetId, presets])
+  const selectableProviders = useMemo(() => {
+    const enabled = providers.filter((provider) => provider.enabled)
+    const current = providers.find((provider) => provider.id === draft.defaultProviderId)
+    if (current && !enabled.some((provider) => provider.id === current.id)) {
+      return [current, ...enabled]
+    }
+    return enabled.length ? enabled : providers
+  }, [draft.defaultProviderId, providers])
 
   useEffect(() => {
     if (isCreating) return
@@ -212,6 +221,19 @@ export function CharacterEditor({ characters, presets, relationships, onSave, on
               {selectablePresets.map((preset) => (
                 <option key={preset.id} value={preset.id}>
                   {preset.enabled ? preset.name : `${preset.name}（已禁用）`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            默认 Provider
+            <select
+              value={draft.defaultProviderId || ''}
+              onChange={(event) => update('defaultProviderId', event.target.value || null)}
+            >
+              {selectableProviders.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.enabled ? provider.name : `${provider.name}（已禁用）`}
                 </option>
               ))}
             </select>

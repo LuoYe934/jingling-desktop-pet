@@ -13,10 +13,18 @@ interface PromptPreviewProps {
 }
 
 function promptMessageLabel(index: number, role: string) {
-  if (index === 0 && role === 'system') return '缓存友好前缀'
-  if (index === 1 && role === 'system') return '动态上下文'
-  if (role === 'user') return '本轮输入'
-  return '聊天记录'
+  if (index === 0 && role === 'system') return '稳定前缀，可复用缓存'
+  if (role === 'system') return '动态上下文，每轮可能变化'
+  if (role === 'user') return '本轮用户输入，保持最后'
+  return '聊天历史，append-only'
+}
+
+function promptCacheValue(value?: number | null) {
+  return value === null || value === undefined ? '未返回' : value
+}
+
+function promptCacheRate(value?: number | null) {
+  return value === null || value === undefined ? '未返回' : `${(value * 100).toFixed(1)}%`
 }
 
 export function PromptPreview({ characters, chats, presets }: PromptPreviewProps) {
@@ -152,6 +160,23 @@ export function PromptPreview({ characters, chats, presets }: PromptPreviewProps
               <strong>{result.promptLayoutVersion}</strong>
               <span>Prompt 布局</span>
             </div>
+            <div>
+              <strong>{promptCacheValue(result.promptCacheHitTokens)}</strong>
+              <span>缓存命中 tokens</span>
+            </div>
+            <div>
+              <strong>{promptCacheValue(result.promptCacheMissTokens)}</strong>
+              <span>缓存未命中 tokens</span>
+            </div>
+            <div>
+              <strong>{promptCacheRate(result.promptCacheHitRate)}</strong>
+              <span>缓存命中率</span>
+            </div>
+          </div>
+
+          <div className="match-strip">
+            <span>结构：稳定前缀 → 聊天历史 → 动态上下文 → 本轮输入</span>
+            <span>当前时间、好感、记忆和世界书放在动态上下文，减少破坏前缀缓存</span>
           </div>
 
           <div className="match-strip">

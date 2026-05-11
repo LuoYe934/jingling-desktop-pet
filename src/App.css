@@ -19,6 +19,11 @@
   background: transparent;
 }
 
+.app-shell--mobile {
+  min-height: 100vh;
+  overflow: auto;
+}
+
 .pet-window {
   width: 100%;
   height: 100%;
@@ -1511,6 +1516,28 @@
   grid-template-columns: minmax(80px, 0.9fr) minmax(110px, 1.1fr) repeat(2, minmax(52px, 0.55fr));
 }
 
+.relationship-rule-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.relationship-rule-column {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.relationship-rule-column h4 {
+  margin: 0;
+  color: var(--sea-dark);
+  font-size: 13px;
+}
+
+.relationship-edit-card--rule {
+  grid-template-columns: minmax(70px, auto) minmax(128px, 1fr) minmax(56px, 0.32fr) auto;
+}
+
 .relationship-wide-field {
   grid-column: 1 / -1;
 }
@@ -1583,6 +1610,7 @@
 .memory-list {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: start;
   gap: 8px;
 }
 
@@ -1597,17 +1625,19 @@
 }
 
 .memory-list-item {
-  min-height: 88px;
+  min-height: 104px;
   min-width: 0;
-  grid-template-rows: minmax(0, auto) auto;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto;
   align-content: start;
-  gap: 7px;
-  padding: 12px 11px;
+  gap: 8px;
+  padding: 12px;
   overflow: hidden;
 }
 
 .memory-list-item__title,
 .memory-list-item__meta {
+  max-width: 100%;
   width: 100%;
   min-width: 0;
   overflow: hidden;
@@ -1616,26 +1646,28 @@
 
 .memory-list-item__title {
   display: -webkit-box !important;
-  max-height: 44px;
   color: var(--ink);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
-  line-height: 1.45;
+  line-height: 1.42;
+  max-height: calc(1.42em * 2);
   white-space: normal !important;
-  text-overflow: clip !important;
-  -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  text-overflow: ellipsis !important;
 }
 
 .memory-list-item__meta {
-  display: block !important;
-  max-height: 19px;
+  display: -webkit-box !important;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 400;
-  line-height: 1.35;
-  white-space: nowrap !important;
-  text-overflow: ellipsis;
+  line-height: 1.45;
+  max-height: calc(1.45em * 2);
+  white-space: normal !important;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  text-overflow: ellipsis !important;
 }
 
 .memory-editor {

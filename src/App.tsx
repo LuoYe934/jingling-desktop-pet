@@ -4,21 +4,45 @@ import { ChatWindow } from './components/ChatWindow'
 import { PetWindow } from './components/PetWindow'
 import { TavernWindow } from './components/TavernWindow'
 import { getWindowLabel, runningInTauri } from './lib/tauri'
+import { MobileApp } from './mobile/MobileApp'
 
-type WindowLabel = 'pet' | 'chat' | 'tavern'
+type DesktopWindowLabel = 'pet' | 'chat' | 'tavern'
+type AppView = DesktopWindowLabel | 'mobile'
 
-function readPreviewWindowLabel(): WindowLabel {
-  const view = new URLSearchParams(window.location.search).get('view')
+function isDesktopWindowLabel(label: string | null | undefined): label is DesktopWindowLabel {
+  return label === 'pet' || label === 'chat' || label === 'tavern'
+}
+
+function shouldUseMobilePreview(params: URLSearchParams) {
+  return params.get('mobile') === '1' || params.get('view') === 'mobile'
+}
+
+function readPreviewAppView(): AppView {
+  const params = new URLSearchParams(window.location.search)
+  if (shouldUseMobilePreview(params)) return 'mobile'
+
+  const view = params.get('view')
   return view === 'pet' || view === 'tavern' ? view : 'chat'
 }
 
-function normalizeWindowLabel(label: string | null | undefined): WindowLabel {
+function normalizeWindowLabel(label: string | null | undefined): DesktopWindowLabel {
   return label === 'pet' || label === 'tavern' ? label : 'chat'
 }
 
+function isAndroidRuntime() {
+  const userAgent = navigator.userAgent.toLowerCase()
+  const platform = navigator.platform.toLowerCase()
+  return userAgent.includes('android') || platform.includes('android')
+}
+
+function resolveTauriAppView(label: string | null | undefined): AppView {
+  if (label === 'main' || label === 'mobile' || isAndroidRuntime()) return 'mobile'
+  return normalizeWindowLabel(label)
+}
+
 function App() {
-  const [windowLabel, setWindowLabel] = useState<WindowLabel | null>(() =>
-    runningInTauri() ? null : readPreviewWindowLabel(),
+  const [appView, setAppView] = useState<AppView | null>(() =>
+    runningInTauri() ? null : readPreviewAppView(),
   )
 
   useEffect(() => {
@@ -27,10 +51,10 @@ function App() {
     let mounted = true
     getWindowLabel()
       .then((label) => {
-        if (mounted) setWindowLabel(normalizeWindowLabel(label))
+        if (mounted) setAppView(resolveTauriAppView(label))
       })
       .catch(() => {
-        if (mounted) setWindowLabel('chat')
+        if (mounted) setAppView(isAndroidRuntime() ? 'mobile' : 'chat')
       })
 
     return () => {
@@ -41,10 +65,10 @@ function App() {
   useEffect(() => {
     if (runningInTauri()) return
 
-    const syncPreviewView = () => setWindowLabel(readPreviewWindowLabel())
+    const syncPreviewView = () => setAppView(readPreviewAppView())
     const onPreviewViewChanged = (event: Event) => {
-      const view = (event as CustomEvent<WindowLabel>).detail
-      setWindowLabel(view === 'pet' || view === 'tavern' ? view : 'chat')
+      const view = (event as CustomEvent<AppView>).detail
+      setAppView(isDesktopWindowLabel(view) || view === 'mobile' ? view : 'chat')
     }
 
     syncPreviewView()
@@ -56,11 +80,19 @@ function App() {
     }
   }, [])
 
-  if (!windowLabel) return null
+  if (!appView) return null
 
   return (
-    <main className={`app-shell app-shell--${windowLabel}`}>
-      {windowLabel === 'pet' ? <PetWindow /> : windowLabel === 'tavern' ? <TavernWindow /> : <ChatWindow />}
+    <main className={`app-shell app-shell--${appView}`}>
+      {appView === 'mobile' ? (
+        <MobileApp />
+      ) : appView === 'pet' ? (
+        <PetWindow />
+      ) : appView === 'tavern' ? (
+        <TavernWindow />
+      ) : (
+        <ChatWindow />
+      )}
     </main>
   )
 }

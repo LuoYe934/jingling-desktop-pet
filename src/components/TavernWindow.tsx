@@ -42,15 +42,19 @@ import {
   resetRelationship,
   archiveMemoryCard,
   confirmMemoryCard,
+  deleteProvider,
   deleteMemoryCard,
+  resetProvider,
   saveCharacter,
   saveMemoryCard,
   savePersona,
   savePreset,
+  saveProvider,
   saveProviderKey,
   saveWorldbook,
   showChatWindow,
   startWindowDrag,
+  testProviderConnection,
 } from '../lib/tauri'
 import type {
   BuiltinAssetSummary,
@@ -315,6 +319,7 @@ export function TavernWindow() {
               <CharacterEditor
                 characters={characters}
                 presets={presets}
+                providers={providers}
                 relationships={relationships}
                 onSave={(character) => saveAndRefresh(() => saveCharacter(character), '角色已保存')}
                 onImport={(path) => run(() => importCharacterCard(path), '角色卡已导入')}
@@ -368,7 +373,16 @@ export function TavernWindow() {
               />
             )}
             {tab === 'preview' && <PromptPreview characters={characters} chats={chats} presets={presets} />}
-            {tab === 'extensions' && <ExtensionPanel providers={providers} onSaved={() => void refresh()} setStatus={setStatus} />}
+            {tab === 'extensions' && (
+              <ExtensionPanel
+                providers={providers}
+                onSaved={() => void refresh()}
+                onSaveProvider={(provider) => saveAndRefresh(() => saveProvider(provider), 'Provider 已保存')}
+                onDeleteProvider={(providerId) => run(() => deleteProvider(providerId), 'Provider 已删除')}
+                onResetProvider={(providerId) => run(() => resetProvider(providerId), 'Provider 已重置')}
+                setStatus={setStatus}
+              />
+            )}
           </main>
         </div>
       </div>
@@ -379,14 +393,27 @@ export function TavernWindow() {
 function ExtensionPanel({
   providers,
   onSaved,
+  onSaveProvider,
+  onDeleteProvider,
+  onResetProvider,
   setStatus,
 }: {
   providers: ProviderConfig[]
   onSaved: () => void
+  onSaveProvider: (provider: ProviderConfig) => Promise<ProviderConfig | undefined>
+  onDeleteProvider: (providerId: string) => Promise<void>
+  onResetProvider: (providerId: string) => Promise<void>
   setStatus: (status: string) => void
 }) {
   const [providerId, setProviderId] = useState('deepseek')
   const [apiKey, setApiKey] = useState('')
+  const selectedProvider = providers.find((provider) => provider.id === providerId) || providers[0]
+  const [providerDraft, setProviderDraft] = useState<ProviderConfig | null>(selectedProvider || null)
+
+  useEffect(() => {
+    if (!selectedProvider) return
+    setProviderDraft(selectedProvider)
+  }, [selectedProvider])
 
   const features = [
     {
@@ -440,6 +467,40 @@ function ExtensionPanel({
     onSaved()
   }
 
+  async function saveProviderDraft() {
+    if (!providerDraft) return
+    await onSaveProvider(providerDraft)
+  }
+
+  function createProvider() {
+    const id = `custom-${Date.now()}`
+    const next: ProviderConfig = {
+      id,
+      name: '自定义 Provider',
+      providerType: 'openai-compatible',
+      baseUrl: '',
+      defaultModel: '',
+      authType: 'bearer',
+      maxTokensField: 'max_tokens',
+      builtIn: false,
+      editable: true,
+      enabled: true,
+      keySaved: false,
+    }
+    setProviderId(id)
+    setProviderDraft(next)
+  }
+
+  async function testProvider() {
+    const target = providerDraft?.id || providerId
+    if (providerDraft && !providers.some((provider) => provider.id === providerDraft.id)) {
+      setStatus('请先保存自定义 Provider，再测试连接')
+      return
+    }
+    const result = await testProviderConnection(target)
+    setStatus(`${providerDraft?.name || selectedProvider?.name || 'Provider'}：${result.message}`)
+  }
+
   return (
     <div className="extensions-panel">
       <section className="provider-panel">
@@ -456,21 +517,107 @@ function ExtensionPanel({
             </select>
           </label>
           <label>
+            名称
+            <input
+              value={providerDraft?.name || ''}
+              disabled={providerDraft?.builtIn}
+              onChange={(event) =>
+                setProviderDraft((current) => (current ? { ...current, name: event.target.value } : current))
+              }
+            />
+          </label>
+          <label>
+            模型
+            <input
+              value={providerDraft?.defaultModel || ''}
+              onChange={(event) =>
+                setProviderDraft((current) => (current ? { ...current, defaultModel: event.target.value } : current))
+              }
+            />
+          </label>
+          <label>
+            接口地址
+            <input
+              value={providerDraft?.baseUrl || ''}
+              disabled={providerDraft?.builtIn}
+              onChange={(event) =>
+                setProviderDraft((current) => (current ? { ...current, baseUrl: event.target.value } : current))
+              }
+            />
+          </label>
+          <label>
+            鉴权
+            <select
+              value={providerDraft?.authType || 'bearer'}
+              disabled={providerDraft?.builtIn}
+              onChange={(event) =>
+                setProviderDraft((current) =>
+                  current ? { ...current, authType: event.target.value as ProviderConfig['authType'] } : current,
+                )
+              }
+            >
+              <option value="bearer">Bearer</option>
+              <option value="api-key">api-key</option>
+              <option value="none">无</option>
+            </select>
+          </label>
+          <label>
+            输出字段
+            <select
+              value={providerDraft?.maxTokensField || 'max_tokens'}
+              disabled={providerDraft?.builtIn}
+              onChange={(event) =>
+                setProviderDraft((current) =>
+                  current
+                    ? { ...current, maxTokensField: event.target.value as ProviderConfig['maxTokensField'] }
+                    : current,
+                )
+              }
+            >
+              <option value="max_tokens">max_tokens</option>
+              <option value="max_completion_tokens">max_completion_tokens</option>
+            </select>
+          </label>
+          <label>
             API Key
             <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
           </label>
+          <button className="secondary-button provider-save" type="button" onClick={createProvider}>
+            <Sparkles size={16} />
+            新增
+          </button>
+          <button className="secondary-button provider-save" type="button" onClick={() => void saveProviderDraft()}>
+            <Save size={16} />
+            保存配置
+          </button>
           <button className="primary-button provider-save" type="button" onClick={() => void saveKey()}>
             <KeyRound size={16} />
             保存 Key
           </button>
+          <button className="secondary-button provider-save" type="button" onClick={() => void testProvider()}>
+            <Bot size={16} />
+            测试
+          </button>
+          {providerDraft?.builtIn ? (
+            <button className="secondary-button provider-save" type="button" onClick={() => void onResetProvider(providerDraft.id)}>
+              <WandSparkles size={16} />
+              重置
+            </button>
+          ) : (
+            <button className="secondary-button provider-save" type="button" onClick={() => providerDraft && void onDeleteProvider(providerDraft.id)}>
+              <Minus size={16} />
+              删除
+            </button>
+          )}
         </div>
         <div className="provider-grid">
           {providers.map((provider) => (
             <div key={provider.id} className="provider-row">
               <strong>{provider.name}</strong>
               <span>{provider.defaultModel}</span>
-              <em>{provider.enabled ? '已启用' : '预留'}</em>
+              <em>{provider.authType} / {provider.maxTokensField}</em>
               <small>{provider.keySaved ? 'Key 已保存' : '未保存 Key'}</small>
+              <small>{provider.baseUrl}</small>
             </div>
           ))}
         </div>

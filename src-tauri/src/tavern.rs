@@ -24,6 +24,7 @@ const SUMMARY_OUTPUT_TOKENS: u16 = 1200;
 const MEMORY_CARD_PROMPT_LIMIT: usize = 1200;
 const MEMORY_CARD_PROMPT_COUNT: usize = 8;
 const MEMORY_CARD_EXTRACT_MAX: usize = 3;
+const AUTO_COMPACTION_BUDGET_DIVISOR: usize = 2;
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const SUMMARY_SECTION_TITLES: [&str; 6] = [
@@ -189,12 +190,55 @@ impl Default for HolidayRule {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RelationshipKeywordRule {
+    pub id: String,
+    pub keyword: String,
+    pub weight: u8,
+    pub enabled: bool,
+    pub note: String,
+}
+
+impl Default for RelationshipKeywordRule {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            keyword: String::new(),
+            weight: 1,
+            enabled: true,
+            note: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RelationshipRulePreferences {
+    pub initialized: bool,
+    pub enabled: bool,
+    pub positive_keywords: Vec<RelationshipKeywordRule>,
+    pub negative_keywords: Vec<RelationshipKeywordRule>,
+}
+
+impl Default for RelationshipRulePreferences {
+    fn default() -> Self {
+        Self {
+            initialized: false,
+            enabled: false,
+            positive_keywords: Vec::new(),
+            negative_keywords: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct RelationshipPreferences {
     pub character_id: String,
     pub nickname_settings: RelationshipNicknameSettings,
     pub idle_lines: Vec<RelationshipIdleLine>,
+    pub rule_preferences: RelationshipRulePreferences,
     pub holidays: Vec<HolidayRule>,
 }
 
@@ -228,6 +272,7 @@ pub struct CharacterRelationship {
     pub last_warm_interaction_at: String,
     pub nickname_settings: RelationshipNicknameSettings,
     pub idle_lines: Vec<RelationshipIdleLine>,
+    pub rule_preferences: RelationshipRulePreferences,
     pub updated_at: String,
 }
 
@@ -548,6 +593,10 @@ pub struct ChatMemoryCompactResult {
     pub skipped_bookmarked_count: usize,
     pub summary_updated: bool,
     pub message: String,
+    pub trigger: String,
+    pub active_message_count: usize,
+    pub active_token_estimate: usize,
+    pub threshold_tokens: usize,
 }
 
 fn now_stamp() -> String {
@@ -695,6 +744,62 @@ fn default_holidays() -> Vec<HolidayRule> {
     ]
 }
 
+fn relationship_keyword_rule(id: &str, keyword: &str, weight: u8, note: &str) -> RelationshipKeywordRule {
+    RelationshipKeywordRule {
+        id: id.to_string(),
+        keyword: keyword.to_string(),
+        weight,
+        enabled: true,
+        note: note.to_string(),
+    }
+}
+
+fn default_relationship_rule_preferences(character_id: &str) -> RelationshipRulePreferences {
+    if character_id == "builtin-character-kaelenyssa-arumorael" {
+        return RelationshipRulePreferences {
+            initialized: true,
+            enabled: true,
+            positive_keywords: vec![
+                relationship_keyword_rule("kaele-positive-common-sense", "人类常识", 1, "温柔解释人类常识"),
+                relationship_keyword_rule("kaele-positive-boundary", "慢慢跟你解释", 1, "耐心教她边界"),
+                relationship_keyword_rule("kaele-positive-consent-touch", "可以摸", 1, "同意后观察或触碰物品"),
+                relationship_keyword_rule("kaele-positive-warm-clothes", "暖和", 1, "分享温暖衣物或食物"),
+                relationship_keyword_rule("kaele-positive-nickname", "凯蕾", 1, "使用她接受的昵称"),
+                relationship_keyword_rule("kaele-positive-lonely", "你会孤单吗", 1, "关心她是否孤单"),
+            ],
+            negative_keywords: vec![
+                relationship_keyword_rule("kaele-negative-monster", "怪物", 1, "把她当怪物"),
+                relationship_keyword_rule("kaele-negative-stop-learning", "别学", 1, "粗暴阻止她学习"),
+                relationship_keyword_rule("kaele-negative-scare", "吓你", 1, "恶意吓她"),
+                relationship_keyword_rule("kaele-negative-abandon", "丢下你", 1, "威胁抛下她"),
+                relationship_keyword_rule("kaele-negative-use", "利用你", 1, "利用她缺乏常识"),
+                relationship_keyword_rule("kaele-negative-shame", "羞辱你", 1, "未经解释直接羞辱她"),
+            ],
+        };
+    }
+    RelationshipRulePreferences::default()
+}
+
+fn normalize_keyword_rules(rules: &mut Vec<RelationshipKeywordRule>) {
+    for rule in rules.iter_mut() {
+        rule.keyword = rule.keyword.trim().to_string();
+        rule.weight = rule.weight.clamp(1, 3);
+        if rule.id.trim().is_empty() {
+            rule.id = new_id("rel-rule", &rule.keyword);
+        }
+    }
+    rules.retain(|rule| !rule.keyword.is_empty());
+    rules.sort_by(|a, b| a.id.cmp(&b.id));
+}
+
+fn normalize_rule_preferences(preferences: &mut RelationshipRulePreferences, character_id: &str) {
+    if !preferences.initialized {
+        *preferences = default_relationship_rule_preferences(character_id);
+    }
+    normalize_keyword_rules(&mut preferences.positive_keywords);
+    normalize_keyword_rules(&mut preferences.negative_keywords);
+}
+
 fn tavern_paths(app: &AppHandle) -> Result<TavernPaths, String> {
     let root = app
         .path()
@@ -740,7 +845,10 @@ fn memory_cards_path(paths: &TavernPaths) -> PathBuf {
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
-    let content = fs::read_to_string(path).map_err(|err| format!("无法读取 {}: {err}", path.display()))?;
+    let mut content = fs::read_to_string(path).map_err(|err| format!("无法读取 {}: {err}", path.display()))?;
+    if content.starts_with('\u{feff}') {
+        content = content.trim_start_matches('\u{feff}').to_string();
+    }
     serde_json::from_str(&content).map_err(|err| format!("JSON 格式错误 {}: {err}", path.display()))
 }
 
@@ -1564,6 +1672,7 @@ fn default_relationship(character_id: &str) -> CharacterRelationship {
         last_warm_interaction_at: String::new(),
         nickname_settings: RelationshipNicknameSettings::default(),
         idle_lines: default_idle_lines(),
+        rule_preferences: default_relationship_rule_preferences(character_id),
         updated_at: now_stamp(),
     };
     normalize_relationship(&mut relationship);
@@ -1578,6 +1687,7 @@ fn normalize_relationship(relationship: &mut CharacterRelationship) {
     relationship.mood_label = mood_label(relationship.mood).to_string();
     relationship.unlocks = relationship_unlocks(relationship.affection);
     normalize_idle_lines(&mut relationship.idle_lines);
+    normalize_rule_preferences(&mut relationship.rule_preferences, &relationship.character_id.clone());
     if relationship.updated_at.trim().is_empty() {
         relationship.updated_at = now_stamp();
     }
@@ -1826,6 +1936,40 @@ fn local_relationship_result(
     })
 }
 
+fn matched_relationship_rule<'a>(
+    text: &str,
+    rules: &'a [RelationshipKeywordRule],
+) -> Option<&'a RelationshipKeywordRule> {
+    rules
+        .iter()
+        .filter(|rule| rule.enabled && !rule.keyword.trim().is_empty())
+        .filter(|rule| text.contains(&rule.keyword.trim().to_lowercase()))
+        .max_by(|a, b| {
+            a.weight
+                .cmp(&b.weight)
+                .then_with(|| a.keyword.chars().count().cmp(&b.keyword.chars().count()))
+                .then_with(|| b.id.cmp(&a.id))
+        })
+}
+
+fn rule_delta(weight: u8, positive: bool) -> i32 {
+    let magnitude = match weight.clamp(1, 3) {
+        1 => 2,
+        2 => 4,
+        _ => 6,
+    };
+    if positive { magnitude } else { -magnitude }
+}
+
+fn rule_mood_delta(weight: u8, positive: bool) -> i32 {
+    let magnitude = match weight.clamp(1, 3) {
+        1 => 5,
+        2 => 8,
+        _ => 12,
+    };
+    if positive { magnitude } else { -magnitude }
+}
+
 fn local_relationship_score(relationship: &CharacterRelationship, user_input: &str) -> LocalRelationshipDecision {
     let text = user_input.trim().to_lowercase();
     if text.is_empty() {
@@ -1930,6 +2074,40 @@ fn local_relationship_score(relationship: &CharacterRelationship, user_input: &s
     let has_uncertain = contains_any(&text, &uncertain);
     let has_negative = has_threat || has_insult || has_dismissive;
     let has_positive = has_apology || has_praise || has_care || has_intimacy;
+    let positive_rule = if relationship.rule_preferences.enabled {
+        matched_relationship_rule(&text, &relationship.rule_preferences.positive_keywords)
+    } else {
+        None
+    };
+    let negative_rule = if relationship.rule_preferences.enabled {
+        matched_relationship_rule(&text, &relationship.rule_preferences.negative_keywords)
+    } else {
+        None
+    };
+
+    if positive_rule.is_some() && negative_rule.is_some() {
+        return LocalRelationshipDecision::NeedsModel;
+    }
+    if let Some(rule) = negative_rule {
+        return local_relationship_result(
+            rule_delta(rule.weight, false),
+            rule_mood_delta(rule.weight, false),
+            "命中了这个角色的雷区",
+            0.95,
+            false,
+            true,
+        );
+    }
+    if let Some(rule) = positive_rule {
+        return local_relationship_result(
+            rule_delta(rule.weight, true),
+            rule_mood_delta(rule.weight, true),
+            "命中了这个角色喜欢的互动",
+            0.92,
+            true,
+            false,
+        );
+    }
 
     if softened && has_negative {
         return LocalRelationshipDecision::NeedsModel;
@@ -1995,6 +2173,9 @@ fn apply_relationship_score(
     let mut raw_mood_delta = score.mood_delta;
     let mut reason = score.reason.clone();
     let mut source = score.source.clone();
+    if source == "local" && reason.starts_with("命中了这个角色") {
+        source = format!("角色偏好 · {}", character_id);
+    }
     if score.negative {
         relationship.warm_streak = 0;
     } else if relationship.affection < 0 && score.warm && (score.delta > 0 || score.mood_delta > 0) {
@@ -5076,9 +5257,13 @@ pub fn build_prompt_for_chat(
     };
     let stable_prefix_tokens = estimate_message_tokens(&stable_system_message);
     let dynamic_context_tokens = estimate_message_tokens(&dynamic_system_message);
-    let mut messages = vec![stable_system_message, dynamic_system_message];
+    let mut messages = vec![stable_system_message];
 
-    let mut budget_used = estimate_prompt_tokens(&messages) + estimate_text_tokens(user_input) + 4;
+    let dynamic_context_budget = dynamic_context_tokens;
+    let mut budget_used = estimate_prompt_tokens(&messages)
+        + dynamic_context_budget
+        + estimate_text_tokens(user_input)
+        + 4;
     let mut recent_message_count = 0usize;
     for message in recent {
         let cost = estimate_message_tokens(&ChatMessage {
@@ -5095,6 +5280,7 @@ pub fn build_prompt_for_chat(
             content: message.content,
         });
     }
+    messages.push(dynamic_system_message);
     messages.push(ChatMessage {
         role: "user".to_string(),
         content: user_input.to_string(),
@@ -5119,7 +5305,7 @@ pub fn build_prompt_for_chat(
         memory_cards_used,
         stable_prefix_tokens,
         dynamic_context_tokens,
-        prompt_layout_version: "cache-friendly-v1".to_string(),
+        prompt_layout_version: "cache-friendly-v2".to_string(),
         messages,
         matched_worldbook_entries: matched,
     })
@@ -5174,11 +5360,16 @@ pub fn append_exchange(
 struct CompactionSelection {
     message_ids: Vec<String>,
     skipped_bookmarked_count: usize,
+    trigger: String,
+    active_message_count: usize,
+    active_token_estimate: usize,
+    threshold_tokens: usize,
 }
 
 fn select_compaction_messages(
     chat: &TavernChatSession,
     context_messages: usize,
+    max_input_tokens: usize,
     force: bool,
 ) -> Option<CompactionSelection> {
     let keep_raw_count = context_messages.max(2);
@@ -5189,12 +5380,30 @@ fn select_compaction_messages(
         .enumerate()
         .filter_map(|(index, message)| (!message.compacted).then_some(index))
         .collect::<Vec<_>>();
+    let active_message_count = active_indices.len();
+    let active_token_estimate = active_indices
+        .iter()
+        .map(|index| {
+            let message = &chat.messages[*index];
+            estimate_message_tokens(&ChatMessage {
+                role: message.role.clone(),
+                content: message.content.clone(),
+            })
+        })
+        .sum::<usize>();
+    let threshold_tokens = (max_input_tokens / AUTO_COMPACTION_BUDGET_DIVISOR).max(1);
+    let over_message_limit = active_message_count > keep_raw_count;
+    let over_token_threshold = active_token_estimate > threshold_tokens;
 
-    if active_indices.len() <= keep_raw_count {
+    if !force && !over_message_limit && !over_token_threshold {
         return None;
     }
 
-    let protected_start = active_indices.len().saturating_sub(keep_raw_count);
+    let protected_start = if over_message_limit {
+        active_indices.len().saturating_sub(keep_raw_count)
+    } else {
+        active_indices.len() / 2
+    };
     let older_indices = &active_indices[..protected_start];
     let skipped_bookmarked_count = older_indices
         .iter()
@@ -5207,10 +5416,19 @@ fn select_compaction_messages(
             (!message.bookmarked).then(|| message.id.clone())
         })
         .collect::<Vec<_>>();
-    let target_count = if force {
+    let target_count = if force || (over_token_threshold && !over_message_limit) {
         eligible_ids.len().min(batch_size)
     } else {
         batch_size
+    };
+    let trigger = if over_message_limit {
+        "message-count"
+    } else if over_token_threshold {
+        "token-threshold"
+    } else if force {
+        "manual"
+    } else {
+        "none"
     };
 
     if target_count == 0 || eligible_ids.len() < target_count {
@@ -5220,6 +5438,10 @@ fn select_compaction_messages(
     Some(CompactionSelection {
         message_ids: eligible_ids.into_iter().take(target_count).collect(),
         skipped_bookmarked_count,
+        trigger: trigger.to_string(),
+        active_message_count,
+        active_token_estimate,
+        threshold_tokens,
     })
 }
 
@@ -5351,13 +5573,32 @@ async fn compact_chat_memory_internal(
         provider_id.as_deref(),
         model.as_deref(),
     )?;
-    let Some(selection) = select_compaction_messages(&chat, preset.context_messages, force) else {
+    let Some(selection) = select_compaction_messages(&chat, preset.context_messages, preset.max_input_chars, force) else {
+        let active_messages = chat
+            .messages
+            .iter()
+            .filter(|message| !message.compacted)
+            .collect::<Vec<_>>();
+        let active_message_count = active_messages.len();
+        let active_token_estimate = active_messages
+            .iter()
+            .map(|message| {
+                estimate_message_tokens(&ChatMessage {
+                    role: message.role.clone(),
+                    content: message.content.clone(),
+                })
+            })
+            .sum::<usize>();
         return Ok(ChatMemoryCompactResult {
             chat,
             compacted_count: 0,
             skipped_bookmarked_count: 0,
             summary_updated: false,
             message: "还没有达到需要整理的上下文上限".to_string(),
+            trigger: "none".to_string(),
+            active_message_count,
+            active_token_estimate,
+            threshold_tokens: (preset.max_input_chars / AUTO_COMPACTION_BUDGET_DIVISOR).max(1),
         });
     };
 
@@ -5379,6 +5620,10 @@ async fn compact_chat_memory_internal(
             skipped_bookmarked_count: selection.skipped_bookmarked_count,
             summary_updated: false,
             message: "没有可整理的旧消息".to_string(),
+            trigger: selection.trigger,
+            active_message_count: selection.active_message_count,
+            active_token_estimate: selection.active_token_estimate,
+            threshold_tokens: selection.threshold_tokens,
         });
     }
 
@@ -5405,6 +5650,10 @@ async fn compact_chat_memory_internal(
             skipped_bookmarked_count: selection.skipped_bookmarked_count,
             summary_updated: false,
             message: "长期摘要刚刚被更新过，本次整理已跳过，稍后可重试。".to_string(),
+            trigger: selection.trigger,
+            active_message_count: selection.active_message_count,
+            active_token_estimate: selection.active_token_estimate,
+            threshold_tokens: selection.threshold_tokens,
         });
     }
 
@@ -5436,6 +5685,10 @@ async fn compact_chat_memory_internal(
             skipped_bookmarked_count,
             summary_updated: false,
             message: "选中的旧消息已被收藏或已整理，本次没有改动。".to_string(),
+            trigger: selection.trigger,
+            active_message_count: selection.active_message_count,
+            active_token_estimate: selection.active_token_estimate,
+            threshold_tokens: selection.threshold_tokens,
         });
     }
 
@@ -5449,6 +5702,10 @@ async fn compact_chat_memory_internal(
         skipped_bookmarked_count,
         summary_updated: true,
         message: format!("已整理 {compacted_count} 条旧消息进长期摘要"),
+        trigger: selection.trigger,
+        active_message_count: selection.active_message_count,
+        active_token_estimate: selection.active_token_estimate,
+        threshold_tokens: selection.threshold_tokens,
     })
 }
 
@@ -5517,6 +5774,7 @@ pub fn get_relationship_preferences(app: AppHandle, character_id: String) -> Res
         character_id,
         nickname_settings: relationship.nickname_settings,
         idle_lines: relationship.idle_lines,
+        rule_preferences: relationship.rule_preferences,
         holidays: load_holidays(&app)?,
     })
 }
@@ -5530,7 +5788,9 @@ pub fn save_relationship_preferences(
     let mut relationship = load_relationship_internal(&app, &character_id)?;
     relationship.nickname_settings = preferences.nickname_settings;
     relationship.idle_lines = preferences.idle_lines;
+    relationship.rule_preferences = preferences.rule_preferences;
     normalize_idle_lines(&mut relationship.idle_lines);
+    normalize_rule_preferences(&mut relationship.rule_preferences, &character_id);
     save_relationship_internal(&app, &mut relationship)?;
     let holidays = save_holidays(&app, preferences.holidays)?;
     emit_relationship_changed(
@@ -5545,6 +5805,7 @@ pub fn save_relationship_preferences(
         character_id,
         nickname_settings: relationship.nickname_settings,
         idle_lines: relationship.idle_lines,
+        rule_preferences: relationship.rule_preferences,
         holidays,
     })
 }
@@ -6238,10 +6499,11 @@ mod tests {
         chat.messages = (0..10).map(message_fixture).collect();
         chat.messages[1].bookmarked = true;
 
-        let selection = select_compaction_messages(&chat, 4, false).expect("selection");
+        let selection = select_compaction_messages(&chat, 4, 1000, false).expect("selection");
 
         assert_eq!(selection.message_ids, vec!["msg-0".to_string(), "msg-2".to_string()]);
         assert_eq!(selection.skipped_bookmarked_count, 1);
+        assert_eq!(selection.trigger, "message-count");
     }
 
     #[test]
@@ -6249,9 +6511,26 @@ mod tests {
         let mut chat = chat_fixture("chat", "title", "1");
         chat.messages = (0..5).map(message_fixture).collect();
 
-        assert!(select_compaction_messages(&chat, 4, false).is_none());
-        let forced = select_compaction_messages(&chat, 4, true).expect("forced selection");
+        assert!(select_compaction_messages(&chat, 4, 1000, false).is_none());
+        let forced = select_compaction_messages(&chat, 4, 1000, true).expect("forced selection");
         assert_eq!(forced.message_ids, vec!["msg-0".to_string()]);
+        assert_eq!(forced.trigger, "message-count");
+    }
+
+    #[test]
+    fn auto_compaction_can_trigger_from_token_threshold_before_message_limit() {
+        let mut chat = chat_fixture("chat", "title", "1");
+        chat.messages = (0..6).map(message_fixture).collect();
+        for message in &mut chat.messages {
+            message.content = "这是一段很长的中文上下文，用来模拟用户和角色已经聊了很久但消息条数还没超过上限。".repeat(20);
+        }
+
+        let selection = select_compaction_messages(&chat, 12, 900, false).expect("token threshold selection");
+
+        assert_eq!(selection.trigger, "token-threshold");
+        assert_eq!(selection.active_message_count, 6);
+        assert!(selection.active_token_estimate > selection.threshold_tokens);
+        assert_eq!(selection.message_ids.len(), 3);
     }
 
     #[test]
@@ -6377,6 +6656,34 @@ mod tests {
             local_relationship_score(&relationship, "我有点失望，但也不知道怎么说"),
             LocalRelationshipDecision::NeedsModel
         ));
+    }
+
+    #[test]
+    fn relationship_keyword_rules_can_reach_max_delta() {
+        let mut relationship = default_relationship("custom-role");
+        relationship.rule_preferences = RelationshipRulePreferences {
+            initialized: true,
+            enabled: true,
+            positive_keywords: vec![relationship_keyword_rule("p", "最高好感", 3, "test")],
+            negative_keywords: vec![relationship_keyword_rule("n", "最高雷区", 3, "test")],
+        };
+        normalize_relationship(&mut relationship);
+
+        let positive = match local_relationship_score(&relationship, "这次触发最高好感") {
+            LocalRelationshipDecision::Apply(score) => score,
+            _ => panic!("expected positive rule score"),
+        };
+        assert_eq!(positive.delta, 6);
+        assert_eq!(positive.mood_delta, 12);
+        assert!(positive.warm);
+
+        let negative = match local_relationship_score(&relationship, "这次触发最高雷区") {
+            LocalRelationshipDecision::Apply(score) => score,
+            _ => panic!("expected negative rule score"),
+        };
+        assert_eq!(negative.delta, -6);
+        assert_eq!(negative.mood_delta, -12);
+        assert!(negative.negative);
     }
 
     #[test]

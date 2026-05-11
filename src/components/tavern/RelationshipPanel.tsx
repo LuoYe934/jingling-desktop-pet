@@ -7,7 +7,9 @@ import type {
   CharacterRelationship,
   HolidayRule,
   RelationshipIdleLine,
+  RelationshipKeywordRule,
   RelationshipPreferences,
+  RelationshipRulePreferences,
   RelationshipStage,
   TavernCharacter,
 } from '../../types/tauri'
@@ -62,6 +64,47 @@ function defaultIdleLines(): RelationshipIdleLine[] {
   ]
 }
 
+function keywordRule(id: string, keyword: string, weight: number, note: string): RelationshipKeywordRule {
+  return {
+    id,
+    keyword,
+    weight,
+    enabled: true,
+    note,
+  }
+}
+
+function defaultRulePreferences(characterId: string): RelationshipRulePreferences {
+  if (characterId === 'builtin-character-kaelenyssa-arumorael') {
+    return {
+      initialized: true,
+      enabled: true,
+      positiveKeywords: [
+        keywordRule('kaele-positive-common-sense', '人类常识', 1, '温柔解释人类常识'),
+        keywordRule('kaele-positive-boundary', '慢慢跟你解释', 1, '耐心教她边界'),
+        keywordRule('kaele-positive-consent-touch', '可以摸', 1, '同意后观察或触碰物品'),
+        keywordRule('kaele-positive-warm-clothes', '暖和', 1, '分享温暖衣物或食物'),
+        keywordRule('kaele-positive-nickname', '凯蕾', 1, '使用她接受的昵称'),
+        keywordRule('kaele-positive-lonely', '你会孤单吗', 1, '关心她是否孤单'),
+      ],
+      negativeKeywords: [
+        keywordRule('kaele-negative-monster', '怪物', 1, '把她当怪物'),
+        keywordRule('kaele-negative-stop-learning', '别学', 1, '粗暴阻止她学习'),
+        keywordRule('kaele-negative-scare', '吓你', 1, '恶意吓她'),
+        keywordRule('kaele-negative-abandon', '丢下你', 1, '威胁抛下她'),
+        keywordRule('kaele-negative-use', '利用你', 1, '利用她缺乏常识'),
+        keywordRule('kaele-negative-shame', '羞辱你', 1, '未经解释直接羞辱她'),
+      ],
+    }
+  }
+  return {
+    initialized: true,
+    enabled: false,
+    positiveKeywords: [],
+    negativeKeywords: [],
+  }
+}
+
 function defaultRelationship(characterId: string): CharacterRelationship {
   return {
     characterId,
@@ -82,6 +125,7 @@ function defaultRelationship(characterId: string): CharacterRelationship {
     lastWarmInteractionAt: '',
     nicknameSettings: defaultNicknameSettings(),
     idleLines: defaultIdleLines(),
+    rulePreferences: defaultRulePreferences(characterId),
     updatedAt: '0',
   }
 }
@@ -93,6 +137,7 @@ function sourceLabel(source: string) {
     recovery: '连续恢复',
     system: '系统',
   }
+  if (source.startsWith('本地规则') || source.startsWith('角色偏好')) return source
   return labels[source] ?? (source || '本地规则')
 }
 
@@ -118,6 +163,16 @@ function emptyIdleLine(): RelationshipIdleLine {
     enabled: true,
     weight: 1,
     note: '',
+  }
+}
+
+function emptyKeywordRule(kind: 'positive' | 'negative'): RelationshipKeywordRule {
+  return {
+    id: `rel-rule-${kind}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    keyword: kind === 'positive' ? '新加分关键词' : '新雷区关键词',
+    weight: 1,
+    enabled: false,
+    note: '改成自己的关键词后勾选启用，再保存设置。',
   }
 }
 
@@ -164,6 +219,8 @@ export function RelationshipPanel({ characters, relationships, onReset }: Relati
 
   const nicknameSettings = preferences?.nicknameSettings ?? relationship.nicknameSettings ?? defaultNicknameSettings()
   const idleLines = preferences?.idleLines ?? relationship.idleLines ?? defaultIdleLines()
+  const rulePreferences =
+    preferences?.rulePreferences ?? relationship.rulePreferences ?? defaultRulePreferences(selectedCharacter.id)
   const holidays = preferences?.holidays ?? []
   const unlockItems = [
     ['特殊问候', relationship.unlocks.specialGreeting],
@@ -177,6 +234,7 @@ export function RelationshipPanel({ characters, relationships, onReset }: Relati
       characterId: selectedCharacter.id,
       nicknameSettings,
       idleLines,
+      rulePreferences,
       holidays,
       ...current,
       ...patch,
@@ -188,11 +246,53 @@ export function RelationshipPanel({ characters, relationships, onReset }: Relati
       characterId: selectedCharacter.id,
       nicknameSettings,
       idleLines,
+      rulePreferences,
       holidays,
     }
     const saved = await saveRelationshipPreferences(selectedCharacter.id, payload)
     setPreferences(saved)
     setStatus('关系设置已保存')
+  }
+
+  function updateRule(kind: 'positive' | 'negative', index: number, patch: Partial<RelationshipKeywordRule>) {
+    const key = kind === 'positive' ? 'positiveKeywords' : 'negativeKeywords'
+    const nextRules = [...rulePreferences[key]]
+    nextRules[index] = { ...nextRules[index], ...patch }
+    patchPreferences({
+      rulePreferences: {
+        ...rulePreferences,
+        initialized: true,
+        [key]: nextRules,
+      },
+    })
+  }
+
+  function addRule(kind: 'positive' | 'negative') {
+    const key = kind === 'positive' ? 'positiveKeywords' : 'negativeKeywords'
+    const nextRule = emptyKeywordRule(kind)
+    patchPreferences({
+      rulePreferences: {
+        ...rulePreferences,
+        initialized: true,
+        [key]: [...rulePreferences[key], nextRule],
+      },
+    })
+    setStatus('已添加一条未启用规则，修改关键词后勾选启用，再点“保存设置”。')
+  }
+
+  function deleteRule(kind: 'positive' | 'negative', id: string) {
+    const key = kind === 'positive' ? 'positiveKeywords' : 'negativeKeywords'
+    patchPreferences({
+      rulePreferences: {
+        ...rulePreferences,
+        initialized: true,
+        [key]: rulePreferences[key].filter((rule) => rule.id !== id),
+      },
+    })
+  }
+
+  function resetRulePreferences() {
+    patchPreferences({ rulePreferences: defaultRulePreferences(selectedCharacter.id) })
   }
 
   return (
@@ -263,9 +363,12 @@ export function RelationshipPanel({ characters, relationships, onReset }: Relati
         </div>
         <details className="relationship-rules">
           <summary>评分说明</summary>
-          <p>本地规则：感谢、夸奖、关心、道歉、辱骂、威胁等明确表达会直接评分，不请求模型。</p>
+          <p>本地规则按强度分层：轻度 ±1、中度 ±2、强烈 ±4、极强 ±6。±6 是单轮上限，不是默认值。</p>
+          <p>感谢、普通关心、抱抱、想你通常是中度 +2；稳定承诺、尊重边界、深层信任、强烈保护通常是 +4。</p>
+          <p>命中下方角色偏好会把强度上调 1 到 3 档；权重 1 往往从 +2 变 +4，权重 2/3 才更容易到 +6。</p>
           <p>AI评分：只有复杂情绪、关系暗示、开心/难过/失望/生气但语义不明确时才后台请求模型 JSON。</p>
-          <p>普通中性聊天不改好感，也不走 AI；模型评分失败不会影响聊天。</p>
+          <p>冲突语境：剧情玩梗、开玩笑威胁、先骂后道歉、反话撒娇等会交给 AI 判断。</p>
+          <p>普通中性聊天不改好感；模型评分失败不会影响聊天。</p>
         </details>
 
         <section className="relationship-unlocks">
@@ -277,6 +380,103 @@ export function RelationshipPanel({ characters, relationships, onReset }: Relati
                 <em>{unlocked ? '已解锁' : '未解锁'}</em>
               </span>
             ))}
+          </div>
+        </section>
+
+        <section className="relationship-config">
+          <div className="relationship-section-title">
+            <div>
+              <h3>角色偏好规则</h3>
+              <p className="relationship-subtle">命中喜欢的互动会提高正向强度，命中雷区会提高负向强度。</p>
+            </div>
+            <button className="secondary-button" type="button" onClick={resetRulePreferences}>
+              <RotateCcw size={15} />
+              重置默认
+            </button>
+          </div>
+          <label className="checkbox-line">
+            <input
+              type="checkbox"
+              checked={rulePreferences.enabled}
+              onChange={(event) =>
+                patchPreferences({
+                  rulePreferences: {
+                    ...rulePreferences,
+                    initialized: true,
+                    enabled: event.target.checked,
+                  },
+                })
+              }
+            />
+            启用当前角色的专属加减分关键词
+          </label>
+          <div className="relationship-rule-columns">
+            {(['positive', 'negative'] as const).map((kind) => {
+              const rules = kind === 'positive' ? rulePreferences.positiveKeywords : rulePreferences.negativeKeywords
+              return (
+                <section key={kind} className="relationship-rule-column">
+                  <div className="relationship-section-title">
+                    <h4>{kind === 'positive' ? '喜欢的互动关键词' : '雷区关键词'}</h4>
+                    <button className="secondary-button" type="button" onClick={() => addRule(kind)}>
+                      <Plus size={15} />
+                      添加
+                    </button>
+                  </div>
+                  <div className="relationship-edit-list">
+                    {rules.map((rule, index) => (
+                      <article key={rule.id || index} className="relationship-edit-card relationship-edit-card--rule">
+                        <label className="checkbox-line">
+                          <input
+                            type="checkbox"
+                            checked={rule.enabled}
+                            onChange={(event) => updateRule(kind, index, { enabled: event.target.checked })}
+                          />
+                          启用
+                        </label>
+                        <label>
+                          关键词
+                          <input
+                            value={rule.keyword}
+                            onChange={(event) => updateRule(kind, index, { keyword: event.target.value })}
+                            placeholder={kind === 'positive' ? '例如：不会丢下你' : '例如：怪物'}
+                          />
+                        </label>
+                        <label>
+                          权重
+                          <input
+                            type="number"
+                            min={1}
+                            max={3}
+                            value={rule.weight}
+                            onChange={(event) => updateRule(kind, index, { weight: Number(event.target.value) || 1 })}
+                          />
+                        </label>
+                        <button
+                          className="icon-button danger-button"
+                          title="删除关键词"
+                          type="button"
+                          onClick={() => deleteRule(kind, rule.id)}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                        <label className="relationship-wide-field">
+                          备注
+                          <input
+                            value={rule.note}
+                            onChange={(event) => updateRule(kind, index, { note: event.target.value })}
+                          />
+                        </label>
+                      </article>
+                    ))}
+                    {!rules.length && (
+                      <div className="empty-panel empty-panel--compact">
+                        {kind === 'positive' ? '还没有专属加分关键词' : '还没有专属雷区关键词'}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )
+            })}
           </div>
         </section>
 

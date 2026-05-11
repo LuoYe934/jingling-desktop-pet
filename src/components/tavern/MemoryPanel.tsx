@@ -110,6 +110,12 @@ function memoryCardTitle(card: MemoryCard, characters: TavernCharacter[], chats:
     .join('\n')
 }
 
+function previewText(text: string, maxLength = 44) {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, maxLength - 1)}…`
+}
+
 function matchesFilter(
   card: MemoryCard,
   filters: MemoryFilters,
@@ -311,7 +317,7 @@ export function MemoryPanel({
                 setDraft(card)
               }}
             >
-              <span className="memory-list-item__title">{card.content}</span>
+              <span className="memory-list-item__title">{previewText(card.content)}</span>
               <span className="memory-list-item__meta">
                 {statusLabels[card.status]} / {typeLabels[card.type]} / {scopeDetail(card, characters, chats)} / 重要度{' '}
                 {card.importance}

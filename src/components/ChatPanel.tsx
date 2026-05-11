@@ -172,6 +172,12 @@ function messageMetaLabel(message: ChatMessage, showTokenStats: boolean, showMes
   return parts.join(' · ')
 }
 
+function cacheStatsLabel(stats: { hit: number; miss: number; rate: number | null } | null) {
+  if (!stats) return '缓存指标：当前模型未返回'
+  const rate = stats.rate === null ? '' : ` · 命中率 ${(stats.rate * 100).toFixed(1)}%`
+  return `缓存命中 ${stats.hit} / 未命中 ${stats.miss}${rate}`
+}
+
 function enabledWithActive<T extends { id: string; enabled: boolean }>(items: T[], activeId: string) {
   const enabled = items.filter((item) => item.enabled)
   const active = items.find((item) => item.id === activeId)
@@ -193,6 +199,7 @@ export function ChatPanel() {
   const [presets, setPresets] = useState<PromptPreset[]>([])
   const [providers, setProviders] = useState<ProviderConfig[]>([])
   const [lastReplyTokens, setLastReplyTokens] = useState(0)
+  const [lastCacheStats, setLastCacheStats] = useState<{ hit: number; miss: number; rate: number | null } | null>(null)
   const [activeCharacterId, setActiveCharacterId] = useState('')
   const [activeChatId, setActiveChatId] = useState('')
   const [activePersonaId, setActivePersonaId] = useState('')
@@ -574,7 +581,16 @@ export function ChatPanel() {
           return [...next, { id: makeId(), role: 'assistant', content, streaming: true }]
         })
       },
-      onDone: ({ content, chatId, completionTokens, assistantCreatedAt, cancelled }) => {
+      onDone: ({
+        content,
+        chatId,
+        completionTokens,
+        assistantCreatedAt,
+        cancelled,
+        promptCacheHitTokens,
+        promptCacheMissTokens,
+        promptCacheHitRate,
+      }) => {
         setIsStreaming(false)
         setMotion(cancelled ? 'idle' : 'happy')
         if (chatId) {
@@ -586,6 +602,15 @@ export function ChatPanel() {
         const replyTokens = hasApiCompletionTokens ? completionTokens : estimateTokenCount(content)
         const tokenSource = hasApiCompletionTokens ? 'api' : 'estimate'
         setLastReplyTokens(replyTokens)
+        if (promptCacheHitTokens !== null && promptCacheHitTokens !== undefined && promptCacheMissTokens !== null && promptCacheMissTokens !== undefined) {
+          setLastCacheStats({
+            hit: promptCacheHitTokens,
+            miss: promptCacheMissTokens,
+            rate: promptCacheHitRate ?? null,
+          })
+        } else {
+          setLastCacheStats(null)
+        }
         if (!cancelled) {
           speakAssistantReply(content, chatId)
         }
@@ -624,6 +649,19 @@ export function ChatPanel() {
           { id: makeId(), role: 'system', content: message },
         ])
         window.setTimeout(() => setMotion('idle'), 1200)
+      },
+      onCompacted: (payload) => {
+        if (payload.chatId !== activeChatIdRef.current) return
+        void refreshLists(payload.chatId).catch(() => undefined)
+        const triggerLabel = payload.trigger === 'token-threshold' ? 'token 超过一半' : '上下文条数超限'
+        const skipped = payload.skippedBookmarkedCount ? `，跳过 ${payload.skippedBookmarkedCount} 条收藏` : ''
+        setRelationshipNotice(`${triggerLabel}，已整理 ${payload.compactedCount} 条旧消息${skipped}`)
+        window.setTimeout(() => setRelationshipNotice(''), 4200)
+      },
+      onCompactError: (payload) => {
+        if (payload.chatId !== activeChatIdRef.current) return
+        setRelationshipNotice(`长期摘要整理失败：${payload.message}`)
+        window.setTimeout(() => setRelationshipNotice(''), 5200)
       },
     }).then((unlisten) => {
       if (disposed) {
@@ -1138,6 +1176,7 @@ export function ChatPanel() {
               本轮上下文约 {promptTokens} / {promptBudget} tokens
             </span>
             <span>{lastReplyTokens ? `上次回复 ${lastReplyTokens} tokens` : '回复完成后显示输出 tokens'}</span>
+            <span>{cacheStatsLabel(lastCacheStats)}</span>
           </div>
         )}
         <form className="composer" onSubmit={submit}>

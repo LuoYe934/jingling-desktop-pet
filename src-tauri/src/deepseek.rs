@@ -44,7 +44,10 @@ struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<Thinking>,
     temperature: f32,
-    max_tokens: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u16>,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,6 +77,8 @@ struct TokenUsage {
     prompt_tokens: Option<u32>,
     completion_tokens: Option<u32>,
     total_tokens: Option<u32>,
+    prompt_cache_hit_tokens: Option<u32>,
+    prompt_cache_miss_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -92,11 +97,31 @@ struct ChatDonePayload {
     prompt_tokens: Option<u32>,
     completion_tokens: Option<u32>,
     total_tokens: Option<u32>,
+    prompt_cache_hit_tokens: Option<u32>,
+    prompt_cache_miss_tokens: Option<u32>,
+    prompt_cache_hit_rate: Option<f32>,
 }
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ChatErrorPayload {
+    message: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ChatCompactedPayload {
+    chat_id: String,
+    compacted_count: usize,
+    skipped_bookmarked_count: usize,
+    summary_updated: bool,
+    message: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ChatCompactErrorPayload {
+    chat_id: String,
     message: String,
 }
 
@@ -139,6 +164,36 @@ fn emit_error(app: &AppHandle, message: impl Into<String>) {
             message: message.into(),
         },
     );
+}
+
+fn prompt_cache_hit_rate(usage: Option<&TokenUsage>) -> Option<f32> {
+    let usage = usage?;
+    let hit = usage.prompt_cache_hit_tokens?;
+    let miss = usage.prompt_cache_miss_tokens?;
+    let total = hit + miss;
+    if total == 0 {
+        return None;
+    }
+    Some(hit as f32 / total as f32)
+}
+
+fn provider_max_tokens(_provider: &tavern::ProviderConfig, value: u16) -> (Option<u16>, Option<u16>) {
+    (Some(value), None)
+}
+
+fn with_provider_auth(
+    request: reqwest::RequestBuilder,
+    provider: &tavern::ProviderConfig,
+    api_key: Option<String>,
+) -> reqwest::RequestBuilder {
+    let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) else {
+        return request;
+    };
+    if provider.provider_type == "ollama" {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    }
 }
 
 fn take_sse_event(buffer: &str) -> Option<(String, String)> {
@@ -202,6 +257,7 @@ pub async fn send_message(
         *guard = Some(token.clone());
     }
 
+    let (max_tokens, max_completion_tokens) = provider_max_tokens(&provider, prompt.max_output_tokens);
     let body = ChatRequest {
         model: prompt.model.clone(),
         messages: prompt.messages.clone(),
@@ -219,16 +275,11 @@ pub async fn send_message(
             None
         },
         temperature: prompt.temperature,
-        max_tokens: prompt.max_output_tokens,
+        max_tokens,
+        max_completion_tokens,
     };
 
-    let mut request = state
-        .client
-        .post(&provider.base_url)
-        .json(&body);
-    if let Some(api_key) = api_key {
-        request = request.bearer_auth(api_key);
-    }
+    let request = with_provider_auth(state.client.post(&provider.base_url).json(&body), &provider, api_key);
     let response = request
         .send()
         .await
@@ -337,16 +388,40 @@ pub async fn send_message(
             .await;
         });
         let compact_app = app.clone();
+        let compact_emit_app = app.clone();
         let compact_client = state.client.clone();
         let compact_prompt = prompt.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = tavern::compact_chat_memory_for_prompt(
+            let chat_id = compact_prompt.chat_id.clone();
+            match tavern::compact_chat_memory_for_prompt(
                 compact_app,
                 compact_client,
                 compact_prompt,
                 false,
             )
-            .await;
+            .await
+            {
+                Ok(result) => {
+                    if result.compacted_count > 0 || result.summary_updated {
+                        let _ = compact_emit_app.emit(
+                            "chat:compacted",
+                            ChatCompactedPayload {
+                                chat_id: result.chat.id,
+                                compacted_count: result.compacted_count,
+                                skipped_bookmarked_count: result.skipped_bookmarked_count,
+                                summary_updated: result.summary_updated,
+                                message: result.message,
+                            },
+                        );
+                    }
+                }
+                Err(message) => {
+                    let _ = compact_emit_app.emit(
+                        "chat:compact-error",
+                        ChatCompactErrorPayload { chat_id, message },
+                    );
+                }
+            }
         });
     }
 
@@ -360,6 +435,9 @@ pub async fn send_message(
             prompt_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_tokens),
             completion_tokens: token_usage.as_ref().and_then(|usage| usage.completion_tokens),
             total_tokens: token_usage.as_ref().and_then(|usage| usage.total_tokens),
+            prompt_cache_hit_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_cache_hit_tokens),
+            prompt_cache_miss_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_cache_miss_tokens),
+            prompt_cache_hit_rate: prompt_cache_hit_rate(token_usage.as_ref()),
         },
     );
     Ok(())
@@ -393,7 +471,7 @@ pub async fn cancel_message(state: State<'_, AppState>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::take_sse_event;
+    use super::{prompt_cache_hit_rate, take_sse_event, StreamChunk};
 
     #[test]
     fn take_sse_event_splits_lf_delimited_events() {
@@ -406,5 +484,31 @@ mod tests {
     #[test]
     fn take_sse_event_waits_for_complete_event() {
         assert!(take_sse_event("data: partial").is_none());
+    }
+
+    #[test]
+    fn stream_chunk_deserializes_deepseek_cache_usage() {
+        let chunk: StreamChunk = serde_json::from_str(
+            r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":8,"total_tokens":108,"prompt_cache_hit_tokens":72,"prompt_cache_miss_tokens":28}}"#,
+        )
+        .expect("valid usage chunk");
+        let usage = chunk.usage.as_ref().expect("usage");
+
+        assert_eq!(usage.prompt_cache_hit_tokens, Some(72));
+        assert_eq!(usage.prompt_cache_miss_tokens, Some(28));
+        assert_eq!(prompt_cache_hit_rate(chunk.usage.as_ref()), Some(0.72));
+    }
+
+    #[test]
+    fn stream_chunk_accepts_usage_without_cache_fields() {
+        let chunk: StreamChunk = serde_json::from_str(
+            r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":8,"total_tokens":108}}"#,
+        )
+        .expect("valid usage chunk");
+        let usage = chunk.usage.as_ref().expect("usage");
+
+        assert_eq!(usage.prompt_cache_hit_tokens, None);
+        assert_eq!(usage.prompt_cache_miss_tokens, None);
+        assert_eq!(prompt_cache_hit_rate(chunk.usage.as_ref()), None);
     }
 }
