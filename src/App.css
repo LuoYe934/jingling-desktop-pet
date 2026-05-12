@@ -701,6 +701,14 @@
   line-height: 1.4;
 }
 
+.settings-note--bridge {
+  border: 1px solid rgba(75, 159, 178, 0.18);
+  border-radius: 12px;
+  padding: 9px 10px;
+  color: var(--sea-dark);
+  background: rgba(235, 249, 247, 0.86);
+}
+
 @keyframes pet-breathe {
   0%,
   100% {
@@ -1892,8 +1900,35 @@
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-.provider-panel h3 {
+.provider-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   margin: 0 0 10px;
+}
+
+.provider-panel h3 {
+  margin: 0;
+}
+
+.provider-status {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(61, 103, 111, 0.14);
+  border-radius: 999px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.provider-status--ready {
+  border-color: rgba(75, 159, 178, 0.25);
+  color: var(--sea-dark);
+  background: rgba(235, 249, 247, 0.92);
 }
 
 .provider-save {
@@ -1914,6 +1949,12 @@
   border-radius: 12px;
   padding: 10px;
   background: rgba(255, 255, 255, 0.76);
+  cursor: pointer;
+}
+
+.provider-row--active {
+  border-color: rgba(75, 159, 178, 0.36);
+  background: linear-gradient(90deg, rgba(235, 249, 247, 0.94), rgba(255, 255, 255, 0.82));
 }
 
 .provider-row span,
@@ -1924,6 +1965,67 @@
 .provider-row em {
   color: var(--sea-dark);
   font-style: normal;
+}
+
+.web-bridge-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  border: 1px solid rgba(75, 159, 178, 0.18);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(247, 252, 250, 0.86);
+}
+
+.web-bridge-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.web-bridge-card,
+.web-bridge-log {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid rgba(61, 103, 111, 0.12);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.web-bridge-card strong,
+.web-bridge-log strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.web-bridge-card span,
+.web-bridge-log span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.web-bridge-actions,
+.web-bridge-risks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.web-bridge-risks span {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(75, 159, 178, 0.16);
+  border-radius: 999px;
+  padding: 0 10px;
+  color: var(--sea-dark);
+  background: rgba(235, 249, 247, 0.82);
+  font-size: 12px;
 }
 
 .feature-switches {

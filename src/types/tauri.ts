@@ -262,6 +262,46 @@ export interface ChatErrorPayload {
   message: string
 }
 
+export interface WebBridgeJob {
+  id: string
+  text: string
+  status: 'queued' | 'claimed' | 'sent' | 'done' | 'error' | string
+  answerText: string
+  rawText: string
+  error: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WebBridgeEvent {
+  id: string
+  kind: string
+  message: string
+  at: string
+  jobId?: string | null
+}
+
+export interface WebBridgeSummary {
+  connected: boolean
+  lastSeen?: string | null
+  pageUrl?: string | null
+  pageTitle?: string | null
+}
+
+export interface WebBridgeStateSnapshot {
+  jobs: WebBridgeJob[]
+  events: WebBridgeEvent[]
+  bridge: WebBridgeSummary
+  qaEnabled: boolean
+  serviceRunning: boolean
+}
+
+export interface StartWebBridgeResult {
+  ok: boolean
+  message: string
+  state: WebBridgeStateSnapshot
+}
+
 export interface TavernCharacter {
   id: string
   name: string
@@ -376,7 +416,7 @@ export interface PromptPreset {
 export interface ProviderConfig {
   id: string
   name: string
-  providerType: string
+  providerType: 'deepseek' | 'openai-compatible' | 'ollama' | 'web-bridge' | string
   baseUrl: string
   defaultModel: string
   authType: 'bearer' | 'api-key' | 'none'

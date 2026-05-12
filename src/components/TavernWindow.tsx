@@ -13,6 +13,8 @@ import {
   Sparkles,
   UserRound,
   WandSparkles,
+  RefreshCw,
+  Send,
   type LucideIcon,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
@@ -53,6 +55,8 @@ import {
   saveProviderKey,
   saveWorldbook,
   showChatWindow,
+  getDeepSeekWebBridgeState,
+  startDeepSeekWebBridge,
   startWindowDrag,
   testProviderConnection,
 } from '../lib/tauri'
@@ -63,6 +67,7 @@ import type {
   MemoryCard,
   PromptPreset,
   ProviderConfig,
+  WebBridgeStateSnapshot,
   TavernCharacter,
   TavernChatListItem,
   Worldbook,
@@ -409,11 +414,28 @@ function ExtensionPanel({
   const [apiKey, setApiKey] = useState('')
   const selectedProvider = providers.find((provider) => provider.id === providerId) || providers[0]
   const [providerDraft, setProviderDraft] = useState<ProviderConfig | null>(selectedProvider || null)
+  const [bridgeState, setBridgeState] = useState<WebBridgeStateSnapshot | null>(null)
+  const isWebBridge = providerDraft?.providerType === 'web-bridge'
 
   useEffect(() => {
     if (!selectedProvider) return
     setProviderDraft(selectedProvider)
   }, [selectedProvider])
+
+  useEffect(() => {
+    if (!isWebBridge) return
+    let cancelled = false
+    async function refresh() {
+      const state = await getDeepSeekWebBridgeState()
+      if (!cancelled) setBridgeState(state)
+    }
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 2500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [isWebBridge])
 
   const features = [
     {
@@ -461,6 +483,10 @@ function ExtensionPanel({
   ]
 
   async function saveKey() {
+    if (isWebBridge) {
+      setStatus('DeepSeek 网页桥不需要 API Key')
+      return
+    }
     await saveProviderKey(providerId, apiKey)
     setApiKey('')
     setStatus('Provider Key 已保存')
@@ -469,6 +495,10 @@ function ExtensionPanel({
 
   async function saveProviderDraft() {
     if (!providerDraft) return
+    if (isWebBridge) {
+      setStatus('DeepSeek 网页桥是 QA 内置 Provider，不需要保存配置')
+      return
+    }
     await onSaveProvider(providerDraft)
   }
 
@@ -492,6 +522,10 @@ function ExtensionPanel({
   }
 
   async function testProvider() {
+    if (isWebBridge) {
+      await startBridge()
+      return
+    }
     const target = providerDraft?.id || providerId
     if (providerDraft && !providers.some((provider) => provider.id === providerDraft.id)) {
       setStatus('请先保存自定义 Provider，再测试连接')
@@ -501,10 +535,45 @@ function ExtensionPanel({
     setStatus(`${providerDraft?.name || selectedProvider?.name || 'Provider'}：${result.message}`)
   }
 
+  async function startBridge() {
+    try {
+      const result = await startDeepSeekWebBridge()
+      setBridgeState(result.state)
+      setStatus(result.message)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function refreshBridge() {
+    const state = await getDeepSeekWebBridgeState()
+    setBridgeState(state)
+    setStatus(state.bridge.connected ? 'DeepSeek 网页桥已连接' : 'DeepSeek 网页桥未连接网页脚本')
+  }
+
+  const bridgeConnected = Boolean(bridgeState?.bridge.connected)
+  const bridgeLastJob = bridgeState?.jobs[0]
+  const providerStatusText = isWebBridge
+    ? bridgeConnected
+      ? '已连接 DeepSeek 网页端'
+      : bridgeState?.serviceRunning
+        ? '已启动，等待网页脚本'
+        : '未启动'
+    : providerDraft?.keySaved
+      ? 'Key 已保存'
+      : providerDraft?.authType === 'none'
+        ? '无需 Key'
+        : '未保存 Key'
+
   return (
     <div className="extensions-panel">
       <section className="provider-panel">
-        <h3>Provider</h3>
+        <div className="provider-panel__head">
+          <h3>Provider</h3>
+          <span className={isWebBridge && bridgeConnected ? 'provider-status provider-status--ready' : 'provider-status'}>
+            {providerStatusText}
+          </span>
+        </div>
         <div className="tavern-form-grid">
           <label>
             接口
@@ -520,26 +589,26 @@ function ExtensionPanel({
             名称
             <input
               value={providerDraft?.name || ''}
-              disabled={providerDraft?.builtIn}
               onChange={(event) =>
                 setProviderDraft((current) => (current ? { ...current, name: event.target.value } : current))
               }
             />
           </label>
           <label>
-            模型
+            {isWebBridge ? '网页端当前模式' : '模型'}
             <input
               value={providerDraft?.defaultModel || ''}
+              disabled={isWebBridge}
               onChange={(event) =>
                 setProviderDraft((current) => (current ? { ...current, defaultModel: event.target.value } : current))
               }
             />
           </label>
           <label>
-            接口地址
+            {isWebBridge ? '本地 bridge 地址' : '接口地址'}
             <input
               value={providerDraft?.baseUrl || ''}
-              disabled={providerDraft?.builtIn}
+              disabled={isWebBridge}
               onChange={(event) =>
                 setProviderDraft((current) => (current ? { ...current, baseUrl: event.target.value } : current))
               }
@@ -549,7 +618,7 @@ function ExtensionPanel({
             鉴权
             <select
               value={providerDraft?.authType || 'bearer'}
-              disabled={providerDraft?.builtIn}
+              disabled={isWebBridge}
               onChange={(event) =>
                 setProviderDraft((current) =>
                   current ? { ...current, authType: event.target.value as ProviderConfig['authType'] } : current,
@@ -565,7 +634,7 @@ function ExtensionPanel({
             输出字段
             <select
               value={providerDraft?.maxTokensField || 'max_tokens'}
-              disabled={providerDraft?.builtIn}
+              disabled={isWebBridge}
               onChange={(event) =>
                 setProviderDraft((current) =>
                   current
@@ -580,7 +649,12 @@ function ExtensionPanel({
           </label>
           <label>
             API Key
-            <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+            <input
+              type="password"
+              value={isWebBridge ? '不需要 API Key，仅本机访问' : apiKey}
+              disabled={isWebBridge}
+              onChange={(event) => setApiKey(event.target.value)}
+            />
           </label>
           <button className="secondary-button provider-save" type="button" onClick={createProvider}>
             <Sparkles size={16} />
@@ -590,13 +664,13 @@ function ExtensionPanel({
             <Save size={16} />
             保存配置
           </button>
-          <button className="primary-button provider-save" type="button" onClick={() => void saveKey()}>
+          <button className="primary-button provider-save" type="button" disabled={isWebBridge} onClick={() => void saveKey()}>
             <KeyRound size={16} />
             保存 Key
           </button>
           <button className="secondary-button provider-save" type="button" onClick={() => void testProvider()}>
-            <Bot size={16} />
-            测试
+            {isWebBridge ? <Send size={16} /> : <Bot size={16} />}
+            {isWebBridge ? '启动网页桥' : '测试'}
           </button>
           {providerDraft?.builtIn ? (
             <button className="secondary-button provider-save" type="button" onClick={() => void onResetProvider(providerDraft.id)}>
@@ -610,13 +684,67 @@ function ExtensionPanel({
             </button>
           )}
         </div>
+        {isWebBridge ? (
+          <div className="web-bridge-panel">
+            <div className="web-bridge-cards">
+              <div className="web-bridge-card">
+                <strong>本地 bridge 服务</strong>
+                <span>{bridgeState?.serviceRunning ? '已启动：127.0.0.1:8787' : '未启动，等待 QA 唤起。'}</span>
+              </div>
+              <div className="web-bridge-card">
+                <strong>Edge / DeepSeek</strong>
+                <span>{bridgeState?.bridge.pageUrl || '尚未收到 DeepSeek 网页端心跳。'}</span>
+              </div>
+              <div className="web-bridge-card">
+                <strong>脚本心跳</strong>
+                <span>{bridgeConnected ? 'Tampermonkey 脚本在线' : '未连接或超过 10 秒未心跳'}</span>
+              </div>
+            </div>
+            <div className="web-bridge-actions">
+              <button className="primary-button provider-save" type="button" onClick={() => void startBridge()}>
+                <Send size={16} />
+                启动网页桥并打开 Edge
+              </button>
+              <button className="secondary-button provider-save" type="button" onClick={() => void refreshBridge()}>
+                <RefreshCw size={16} />
+                检测状态
+              </button>
+            </div>
+            <div className="web-bridge-risks">
+              <span>仅本机自用</span>
+              <span>不读取 Cookie / token</span>
+              <span>单任务队列</span>
+              <span>验证码或登录失效时暂停</span>
+            </div>
+            <div className="web-bridge-log">
+              <strong>最近任务</strong>
+              <span>
+                {bridgeLastJob
+                  ? `${bridgeLastJob.status}：${bridgeLastJob.error || bridgeLastJob.answerText || '等待 DeepSeek 网页端回复'}`
+                  : '暂无任务。聊天窗口选择 DeepSeek 网页桥后发送，会进入这里。'}
+              </span>
+            </div>
+          </div>
+        ) : null}
         <div className="provider-grid">
           {providers.map((provider) => (
-            <div key={provider.id} className="provider-row">
+            <div
+              key={provider.id}
+              className={provider.id === providerId ? 'provider-row provider-row--active' : 'provider-row'}
+              onClick={() => setProviderId(provider.id)}
+            >
               <strong>{provider.name}</strong>
               <span>{provider.defaultModel}</span>
-              <em>{provider.authType} / {provider.maxTokensField}</em>
-              <small>{provider.keySaved ? 'Key 已保存' : '未保存 Key'}</small>
+              <em>{provider.providerType === 'web-bridge' ? 'local bridge' : `${provider.authType} / ${provider.maxTokensField}`}</em>
+              <small>
+                {provider.providerType === 'web-bridge'
+                  ? 'QA 网页桥'
+                  : provider.keySaved
+                    ? 'Key 已保存'
+                    : provider.authType === 'none'
+                      ? '无需 Key'
+                      : '未保存 Key'}
+              </small>
               <small>{provider.baseUrl}</small>
             </div>
           ))}

@@ -26,7 +26,7 @@ tauri-plugin-log = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 futures-util = "0.3"
 keyring = "3"
-tokio = { version = "1", features = ["sync", "macros", "rt", "time"] }
+tokio = { version = "1", features = ["sync", "macros", "rt", "time", "net", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tauri-plugin-dialog = "2.7.1"
 

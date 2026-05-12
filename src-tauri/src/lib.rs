@@ -6,6 +6,7 @@ mod settings;
 mod tavern;
 #[cfg(not(mobile))]
 mod tray;
+mod web_bridge;
 
 use deepseek::{
     cancel_message, compact_chat_memory_command, extract_memory_cards_for_chat, send_message,
@@ -27,13 +28,14 @@ use tavern::{
     list_chats, list_personas, list_presets, list_providers, list_relationships, list_memory_cards,
     list_worldbooks, load_chat_command,
     preview_prompt, reset_relationship, save_character, save_memory_card, save_persona,
-    save_preset, save_provider_key, save_chat_summary, save_relationship_preferences,
+    save_preset, save_provider, save_provider_key, save_chat_summary, save_relationship_preferences,
     save_worldbook, search_chats, archive_memory_card, confirm_memory_card, delete_memory_card,
-    test_worldbook_match, update_chat_settings,
+    test_provider_connection, test_worldbook_match, update_chat_settings, delete_provider, reset_provider,
 };
 use tauri::Manager;
 #[cfg(not(mobile))]
 use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+use web_bridge::{get_deepseek_web_bridge_state, start_deepseek_web_bridge, WebBridgeState};
 
 #[cfg(not(mobile))]
 const TOGGLE_PET_SHORTCUT: &str = "Ctrl+Alt+Space";
@@ -96,6 +98,7 @@ fn setup_desktop(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(AppState::default())
+        .manage(WebBridgeState::default())
         .manage(TtsPreviewState::default());
 
     #[cfg(not(mobile))]
@@ -183,7 +186,13 @@ pub fn run() {
         import_preset,
         export_preset,
         list_providers,
+        save_provider,
+        delete_provider,
+        reset_provider,
+        test_provider_connection,
         save_provider_key,
+        start_deepseek_web_bridge,
+        get_deepseek_web_bridge_state,
         preview_prompt,
         export_chat,
         import_chat
@@ -250,7 +259,13 @@ pub fn run() {
             import_preset,
             export_preset,
             list_providers,
+            save_provider,
+            delete_provider,
+            reset_provider,
+            test_provider_connection,
             save_provider_key,
+            start_deepseek_web_bridge,
+            get_deepseek_web_bridge_state,
             preview_prompt,
             export_chat,
             import_chat

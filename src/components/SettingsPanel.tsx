@@ -13,20 +13,24 @@ import {
   Power,
   RotateCcw,
   Save,
+  Server,
   SlidersHorizontal,
   Volume2,
 } from 'lucide-react'
 import { getDistinctSpeechVoices, pickSpeechVoice, speakLocalText, speakPiperText } from '../lib/speech'
 import { getPiperStatus, runningInTauri, saveApiKey, speakText, toggleAutostart } from '../lib/tauri'
 import { usePetStore } from '../stores/petStore'
-import type { AppSettings, PiperStatus, TtsSettings } from '../types/tauri'
+import type { AppSettings, PiperStatus, ProviderConfig, TtsSettings } from '../types/tauri'
 
 interface SettingsPanelProps {
   settings: AppSettings
   ttsSettings: TtsSettings
   voices: SpeechSynthesisVoice[]
+  providers: ProviderConfig[]
+  activeProviderId: string
   onSettingsChange: (settings: AppSettings) => void
   onTtsSettingsChange: (settings: TtsSettings) => void
+  onProviderChange: (providerId: string) => void | Promise<void>
   onClear: () => void | Promise<void>
 }
 
@@ -38,8 +42,11 @@ export function SettingsPanel({
   settings,
   ttsSettings,
   voices,
+  providers,
+  activeProviderId,
   onSettingsChange,
   onTtsSettingsChange,
+  onProviderChange,
   onClear,
 }: SettingsPanelProps) {
   const [apiKey, setApiKey] = useState('')
@@ -53,6 +60,8 @@ export function SettingsPanel({
   const setHasApiKey = usePetStore((state) => state.setHasApiKey)
   const setShowMessageTimes = usePetStore((state) => state.setShowMessageTimes)
   const setShowTokenStats = usePetStore((state) => state.setShowTokenStats)
+  const activeProvider = providers.find((provider) => provider.id === activeProviderId)
+  const isWebBridge = activeProvider?.providerType === 'web-bridge'
 
   function update<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
     onSettingsChange({ ...settings, [key]: value })
@@ -127,6 +136,7 @@ export function SettingsPanel({
   }
 
   async function saveKey() {
+    if (isWebBridge) return
     await saveApiKey(apiKey)
     setHasApiKey(apiKey.trim().length > 0)
     setApiKey('')
@@ -153,6 +163,25 @@ export function SettingsPanel({
 
       <div className="settings">
         <div className="settings-row">
+          <label htmlFor="chat-provider">
+            <Server size={14} />
+            Provider
+          </label>
+          <select
+            id="chat-provider"
+            value={activeProviderId}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) => void onProviderChange(event.target.value)}
+          >
+            {providers.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name}
+              </option>
+            ))}
+          </select>
+          <span>{isWebBridge ? '网页桥' : activeProvider?.keySaved ? 'Key 已存' : activeProvider?.authType === 'none' ? '本地' : 'API'}</span>
+        </div>
+
+        <div className="settings-row">
           <label htmlFor="api-key">
             <KeyRound size={14} />
             API Key
@@ -161,10 +190,11 @@ export function SettingsPanel({
             id="api-key"
             type="password"
             value={apiKey}
-            placeholder={hasKey ? '已保存到系统凭据' : 'sk-...'}
+            disabled={isWebBridge}
+            placeholder={isWebBridge ? '网页桥不需要 API Key' : hasKey ? '已保存到系统凭据' : 'sk-...'}
             onChange={(event) => setApiKey(event.target.value)}
           />
-          <button className="icon-button" title="保存" type="button" onClick={() => void saveKey()}>
+          <button className="icon-button" title="保存" type="button" disabled={isWebBridge} onClick={() => void saveKey()}>
             <Save size={15} />
           </button>
         </div>
@@ -172,18 +202,28 @@ export function SettingsPanel({
         <div className="settings-row">
           <label htmlFor="model">
             <DatabaseZap size={14} />
-            模型
+            {isWebBridge ? '网页端模式' : '模型'}
           </label>
-          <select
-            id="model"
-            value={settings.model}
-            onChange={(event: ChangeEvent<HTMLSelectElement>) => update('model', event.target.value)}
-          >
-            <option value="deepseek-v4-flash">deepseek-v4-flash</option>
-            <option value="deepseek-v4-pro">deepseek-v4-pro</option>
-          </select>
+          {isWebBridge ? (
+            <input id="model" value="由 DeepSeek 网页端按钮决定" disabled readOnly />
+          ) : (
+            <select
+              id="model"
+              value={settings.model}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => update('model', event.target.value)}
+            >
+              <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+              <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+            </select>
+          )}
           <span />
         </div>
+
+        {isWebBridge ? (
+          <p className="settings-note settings-note--bridge">
+            当前聊天会走本地网页桥；请保持扩展页 bridge 已启动，且 DeepSeek 网页端脚本在线。
+          </p>
+        ) : null}
 
         <div className="settings-row">
           <label htmlFor="scale">

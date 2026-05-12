@@ -1213,7 +1213,10 @@ export function ChatPanel() {
         settings={settings}
         ttsSettings={ttsSettings}
         voices={voices}
+        providers={providers}
+        activeProviderId={activeProviderId}
         onClear={clearAll}
+        onProviderChange={(providerId) => updateActiveChatSettings({ providerId })}
         onSettingsChange={(next) => {
           setSettings(next)
           void updateSettings(next).then(setSettings).catch(() => undefined)

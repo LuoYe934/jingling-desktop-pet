@@ -166,190 +166,45 @@ fn emit_error(app: &AppHandle, message: impl Into<String>) {
     );
 }
 
-fn prompt_cache_hit_rate(usage: Option<&TokenUsage>) -> Option<f32> {
-    let usage = usage?;
-    let hit = usage.prompt_cache_hit_tokens?;
-    let miss = usage.prompt_cache_miss_tokens?;
-    let total = hit + miss;
-    if total == 0 {
-        return None;
-    }
-    Some(hit as f32 / total as f32)
+fn emit_done(
+    app: &AppHandle,
+    prompt: tavern::PromptBuildResult,
+    final_reply: String,
+    assistant_created_at: String,
+    cancelled: bool,
+    token_usage: Option<TokenUsage>,
+) {
+    let _ = app.emit(
+        "chat:done",
+        ChatDonePayload {
+            content: final_reply,
+            chat_id: prompt.chat_id,
+            assistant_created_at,
+            cancelled,
+            prompt_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_tokens),
+            completion_tokens: token_usage.as_ref().and_then(|usage| usage.completion_tokens),
+            total_tokens: token_usage.as_ref().and_then(|usage| usage.total_tokens),
+            prompt_cache_hit_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_cache_hit_tokens),
+            prompt_cache_miss_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_cache_miss_tokens),
+            prompt_cache_hit_rate: prompt_cache_hit_rate(token_usage.as_ref()),
+        },
+    );
 }
 
-fn provider_max_tokens(_provider: &tavern::ProviderConfig, value: u16) -> (Option<u16>, Option<u16>) {
-    (Some(value), None)
-}
-
-fn with_provider_auth(
-    request: reqwest::RequestBuilder,
-    provider: &tavern::ProviderConfig,
-    api_key: Option<String>,
-) -> reqwest::RequestBuilder {
-    let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) else {
-        return request;
-    };
-    if provider.provider_type == "ollama" {
-        request
-    } else {
-        request.bearer_auth(api_key)
-    }
-}
-
-fn take_sse_event(buffer: &str) -> Option<(String, String)> {
-    if let Some(index) = buffer.find("\n\n") {
-        let event = buffer[..index].to_string();
-        let rest = buffer[index + 2..].to_string();
-        return Some((event, rest));
-    }
-    if let Some(index) = buffer.find("\r\n\r\n") {
-        let event = buffer[..index].to_string();
-        let rest = buffer[index + 4..].to_string();
-        return Some((event, rest));
-    }
-    None
-}
-
-#[tauri::command]
-pub async fn send_message(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    message: String,
-    model: Option<String>,
-    chat_id: Option<String>,
-    character_id: Option<String>,
-    preset_id: Option<String>,
-    provider_id: Option<String>,
-    client_now: Option<String>,
+fn finalize_reply(
+    app: &AppHandle,
+    state: &AppState,
+    prompt: tavern::PromptBuildResult,
+    user_message: String,
+    final_reply: String,
     user_created_at: Option<String>,
+    assistant_created_at: String,
+    cancelled: bool,
+    token_usage: Option<TokenUsage>,
 ) -> Result<(), String> {
-    let user_message = message.trim().to_string();
-    if user_message.is_empty() {
-        return Err("请输入想和鲸灵说的话。".to_string());
-    }
-
-    let prompt = tavern::build_prompt_for_chat(
-        &app,
-        &user_message,
-        chat_id,
-        character_id,
-        preset_id,
-        provider_id,
-        model.clone(),
-        client_now,
-    )?;
-    let provider = tavern::provider_by_id(Some(&prompt.provider_id))?;
-    let api_key = tavern::read_provider_api_key(&provider.id)?;
-    let needs_key = provider.provider_type != "ollama";
-    if needs_key && api_key.is_none() {
-        return Err(format!(
-            "还没有设置 {} API Key。可以在酒馆的“扩展 > Provider”里保存。",
-            provider.name
-        ));
-    }
-
-    let token = CancellationToken::new();
-    {
-        let mut guard = state.cancel_token.lock().await;
-        if let Some(previous) = guard.take() {
-            previous.cancel();
-        }
-        *guard = Some(token.clone());
-    }
-
-    let (max_tokens, max_completion_tokens) = provider_max_tokens(&provider, prompt.max_output_tokens);
-    let body = ChatRequest {
-        model: prompt.model.clone(),
-        messages: prompt.messages.clone(),
-        stream: true,
-        stream_options: if provider.provider_type == "ollama" {
-            None
-        } else {
-            Some(StreamOptions {
-                include_usage: true,
-            })
-        },
-        thinking: if provider.provider_type == "deepseek" {
-            Some(Thinking { kind: "disabled" })
-        } else {
-            None
-        },
-        temperature: prompt.temperature,
-        max_tokens,
-        max_completion_tokens,
-    };
-
-    let request = with_provider_auth(state.client.post(&provider.base_url).json(&body), &provider, api_key);
-    let response = request
-        .send()
-        .await
-        .map_err(|err| format!("连接 {} 失败: {err}", provider.name))?;
-
-    if response.status() != StatusCode::OK {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_else(|_| "无法读取错误详情".to_string());
-        let message = format!("{} 返回 {status}: {text}", provider.name);
-        emit_error(&app, &message);
-        return Err(message);
-    }
-
-    let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
-    let mut assistant_reply = String::new();
-    let mut token_usage: Option<TokenUsage> = None;
-    let mut cancelled = false;
-
-    loop {
-        tokio::select! {
-            _ = token.cancelled() => {
-                cancelled = true;
-                break;
-            }
-            maybe_chunk = stream.next() => {
-                let Some(chunk_result) = maybe_chunk else { break };
-                let bytes = chunk_result.map_err(|err| format!("读取 {} 流失败: {err}", provider.name))?;
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-                while let Some((event, rest)) = take_sse_event(&buffer) {
-                    buffer = rest;
-                    for line in event.lines() {
-                        let line = line.trim();
-                        if !line.starts_with("data:") {
-                            continue;
-                        }
-                        let data = line.trim_start_matches("data:").trim();
-                        if data == "[DONE]" {
-                            break;
-                        }
-                        let parsed: StreamChunk = match serde_json::from_str(data) {
-                            Ok(value) => value,
-                            Err(_) => continue,
-                        };
-                        if parsed.usage.is_some() {
-                            token_usage = parsed.usage.clone();
-                        }
-                        for choice in parsed.choices {
-                            if let Some(content) = choice.delta.and_then(|delta| delta.content) {
-                                assistant_reply.push_str(&content);
-                                let _ = app.emit("chat:chunk", ChatChunkPayload { content });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    {
-        let mut guard = state.cancel_token.lock().await;
-        *guard = None;
-    }
-
-    let final_reply = tavern::compact_reply(&assistant_reply, prompt.reply_limit);
-    let assistant_created_at = tavern::now_stamp_public();
     if !final_reply.is_empty() {
         let (user_message_id, assistant_message_id) = tavern::append_exchange(
-            &app,
+            app,
             &prompt,
             &user_message,
             &final_reply,
@@ -425,22 +280,290 @@ pub async fn send_message(
         });
     }
 
-    let _ = app.emit(
-        "chat:done",
-        ChatDonePayload {
-            content: final_reply,
-            chat_id: prompt.chat_id,
-            assistant_created_at,
-            cancelled,
-            prompt_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_tokens),
-            completion_tokens: token_usage.as_ref().and_then(|usage| usage.completion_tokens),
-            total_tokens: token_usage.as_ref().and_then(|usage| usage.total_tokens),
-            prompt_cache_hit_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_cache_hit_tokens),
-            prompt_cache_miss_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_cache_miss_tokens),
-            prompt_cache_hit_rate: prompt_cache_hit_rate(token_usage.as_ref()),
-        },
-    );
+    emit_done(app, prompt, final_reply, assistant_created_at, cancelled, token_usage);
     Ok(())
+}
+
+fn web_bridge_prompt_text(prompt: &tavern::PromptBuildResult) -> String {
+    prompt
+        .messages
+        .iter()
+        .map(|message| {
+            let label = match message.role.as_str() {
+                "system" => "系统",
+                "assistant" => "角色",
+                "user" => "用户",
+                other => other,
+            };
+            format!("{label}:\n{}", message.content.trim())
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n")
+}
+
+fn prompt_cache_hit_rate(usage: Option<&TokenUsage>) -> Option<f32> {
+    let usage = usage?;
+    let hit = usage.prompt_cache_hit_tokens?;
+    let miss = usage.prompt_cache_miss_tokens?;
+    let total = hit + miss;
+    if total == 0 {
+        return None;
+    }
+    Some(hit as f32 / total as f32)
+}
+
+fn provider_max_tokens(provider: &tavern::ProviderConfig, value: u16) -> (Option<u16>, Option<u16>) {
+    if provider.max_tokens_field == "max_completion_tokens" {
+        (None, Some(value))
+    } else {
+        (Some(value), None)
+    }
+}
+
+fn with_provider_auth(
+    request: reqwest::RequestBuilder,
+    provider: &tavern::ProviderConfig,
+    api_key: Option<String>,
+) -> reqwest::RequestBuilder {
+    let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) else {
+        return request;
+    };
+    if provider.auth_type == "api-key" {
+        request.header("api-key", api_key)
+    } else if provider.auth_type == "none" || provider.provider_type == "ollama" {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    }
+}
+
+fn take_sse_event(buffer: &str) -> Option<(String, String)> {
+    if let Some(index) = buffer.find("\n\n") {
+        let event = buffer[..index].to_string();
+        let rest = buffer[index + 2..].to_string();
+        return Some((event, rest));
+    }
+    if let Some(index) = buffer.find("\r\n\r\n") {
+        let event = buffer[..index].to_string();
+        let rest = buffer[index + 4..].to_string();
+        return Some((event, rest));
+    }
+    None
+}
+
+#[tauri::command]
+pub async fn send_message(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    bridge_state: State<'_, crate::web_bridge::WebBridgeState>,
+    message: String,
+    model: Option<String>,
+    chat_id: Option<String>,
+    character_id: Option<String>,
+    preset_id: Option<String>,
+    provider_id: Option<String>,
+    client_now: Option<String>,
+    user_created_at: Option<String>,
+) -> Result<(), String> {
+    let user_message = message.trim().to_string();
+    if user_message.is_empty() {
+        return Err("请输入想和鲸灵说的话。".to_string());
+    }
+
+    let prompt = tavern::build_prompt_for_chat(
+        &app,
+        &user_message,
+        chat_id,
+        character_id,
+        preset_id,
+        provider_id,
+        model.clone(),
+        client_now,
+    )?;
+    let provider = tavern::provider_by_id(Some(&app), Some(&prompt.provider_id))?;
+    if provider.provider_type == crate::web_bridge::WEB_BRIDGE_PROVIDER_TYPE {
+        if !crate::web_bridge::qa_features_enabled() {
+            return Err("DeepSeek 网页桥只在 QA 构建中可用。".to_string());
+        }
+        let token = CancellationToken::new();
+        {
+            let mut guard = state.cancel_token.lock().await;
+            if let Some(previous) = guard.take() {
+                previous.cancel();
+            }
+            *guard = Some(token.clone());
+        }
+        let bridge_text = web_bridge_prompt_text(&prompt);
+        let job_result = tokio::select! {
+            _ = token.cancelled() => {
+                Err("已停止 DeepSeek 网页桥任务等待。".to_string())
+            }
+            result = crate::web_bridge::enqueue_and_wait(&bridge_state, bridge_text) => {
+                result
+            }
+        };
+        {
+            let mut guard = state.cancel_token.lock().await;
+            *guard = None;
+        }
+        let job = match job_result {
+            Ok(job) => job,
+            Err(message) => {
+                emit_error(&app, &message);
+                return Err(message);
+            }
+        };
+        let final_reply = tavern::compact_reply(&job.answer_text, prompt.reply_limit);
+        if final_reply.is_empty() {
+            let message = "DeepSeek 网页桥没有回传可用回复。".to_string();
+            emit_error(&app, &message);
+            return Err(message);
+        }
+        let _ = app.emit(
+            "chat:chunk",
+            ChatChunkPayload {
+                content: final_reply.clone(),
+            },
+        );
+        let assistant_created_at = tavern::now_stamp_public();
+        return finalize_reply(
+            &app,
+            &state,
+            prompt,
+            user_message,
+            final_reply,
+            user_created_at,
+            assistant_created_at,
+            false,
+            None,
+        );
+    }
+    let api_key = tavern::read_provider_api_key(&provider.id)?;
+    let needs_key = provider.provider_type != "ollama";
+    if needs_key && api_key.is_none() {
+        return Err(format!(
+            "还没有设置 {} API Key。可以在酒馆的“扩展 > Provider”里保存。",
+            provider.name
+        ));
+    }
+
+    let token = CancellationToken::new();
+    {
+        let mut guard = state.cancel_token.lock().await;
+        if let Some(previous) = guard.take() {
+            previous.cancel();
+        }
+        *guard = Some(token.clone());
+    }
+
+    let (max_tokens, max_completion_tokens) = provider_max_tokens(&provider, prompt.max_output_tokens);
+    let body = ChatRequest {
+        model: prompt.model.clone(),
+        messages: prompt.messages.clone(),
+        stream: true,
+        stream_options: if provider.provider_type == "ollama" {
+            None
+        } else {
+            Some(StreamOptions {
+                include_usage: true,
+            })
+        },
+        thinking: if provider.provider_type == "deepseek" {
+            Some(Thinking { kind: "disabled" })
+        } else {
+            None
+        },
+        temperature: prompt.temperature,
+        max_tokens,
+        max_completion_tokens,
+    };
+
+    let request = with_provider_auth(
+        state
+            .client
+            .post(tavern::provider_chat_completions_url(&provider))
+            .json(&body),
+        &provider,
+        api_key,
+    );
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("连接 {} 失败: {err}", provider.name))?;
+
+    if response.status() != StatusCode::OK {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_else(|_| "无法读取错误详情".to_string());
+        let message = format!("{} 返回 {status}: {text}", provider.name);
+        emit_error(&app, &message);
+        return Err(message);
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut assistant_reply = String::new();
+    let mut token_usage: Option<TokenUsage> = None;
+    let mut cancelled = false;
+
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => {
+                cancelled = true;
+                break;
+            }
+            maybe_chunk = stream.next() => {
+                let Some(chunk_result) = maybe_chunk else { break };
+                let bytes = chunk_result.map_err(|err| format!("读取 {} 流失败: {err}", provider.name))?;
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                while let Some((event, rest)) = take_sse_event(&buffer) {
+                    buffer = rest;
+                    for line in event.lines() {
+                        let line = line.trim();
+                        if !line.starts_with("data:") {
+                            continue;
+                        }
+                        let data = line.trim_start_matches("data:").trim();
+                        if data == "[DONE]" {
+                            break;
+                        }
+                        let parsed: StreamChunk = match serde_json::from_str(data) {
+                            Ok(value) => value,
+                            Err(_) => continue,
+                        };
+                        if parsed.usage.is_some() {
+                            token_usage = parsed.usage.clone();
+                        }
+                        for choice in parsed.choices {
+                            if let Some(content) = choice.delta.and_then(|delta| delta.content) {
+                                assistant_reply.push_str(&content);
+                                let _ = app.emit("chat:chunk", ChatChunkPayload { content });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    {
+        let mut guard = state.cancel_token.lock().await;
+        *guard = None;
+    }
+
+    let final_reply = tavern::compact_reply(&assistant_reply, prompt.reply_limit);
+    let assistant_created_at = tavern::now_stamp_public();
+    finalize_reply(
+        &app,
+        &state,
+        prompt,
+        user_message,
+        final_reply,
+        user_created_at,
+        assistant_created_at,
+        cancelled,
+        token_usage,
+    )
 }
 
 #[tauri::command]

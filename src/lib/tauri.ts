@@ -23,6 +23,8 @@ import type {
   PiperStatus,
   PiperSynthesisResult,
   ProviderConnectionTestResult,
+  StartWebBridgeResult,
+  WebBridgeStateSnapshot,
   PromptBuildResult,
   PromptPreset,
   ProviderConfig,
@@ -719,6 +721,16 @@ export async function saveProviderKey(providerId: string, apiKey: string) {
   return invoke<void>('save_provider_key', { providerId, apiKey })
 }
 
+export async function startDeepSeekWebBridge() {
+  if (!runningInTauri()) return mockStartWebBridge()
+  return invoke<StartWebBridgeResult>('start_deepseek_web_bridge')
+}
+
+export async function getDeepSeekWebBridgeState() {
+  if (!runningInTauri()) return mockWebBridgeState
+  return invoke<WebBridgeStateSnapshot>('get_deepseek_web_bridge_state')
+}
+
 function mockSaveProvider(provider: ProviderConfig) {
   const next = {
     ...provider,
@@ -988,11 +1000,11 @@ function mockCompactChatMemory(chatId: string): ChatMemoryCompactResult {
     0,
   )
   const thresholdTokens = Math.max(1, Math.floor((preset?.maxInputChars ?? 12000) / 2))
-  const overMessageLimit = activeMessages.length > keepRawCount
+  const overMessageLimit = activeMessages.length >= keepRawCount
   const overTokenThreshold = activeTokenEstimate > thresholdTokens
-  const protectedStart = overMessageLimit
-    ? Math.max(0, activeMessages.length - keepRawCount)
-    : Math.floor(activeMessages.length / 2)
+  const protectedStart = overMessageLimit || overTokenThreshold
+    ? Math.floor(activeMessages.length / 2)
+    : Math.max(0, activeMessages.length - keepRawCount)
   const olderMessages = activeMessages.slice(0, protectedStart)
   const skippedBookmarkedCount = olderMessages.filter((message) => message.bookmarked).length
   const selected = olderMessages.filter((message) => !message.bookmarked).slice(0, batchSize)
@@ -3840,7 +3852,53 @@ const mockProviders: ProviderConfig[] = [
     enabled: true,
     keySaved: false,
   },
+  {
+    id: 'deepseek-web-bridge',
+    name: 'DeepSeek 网页桥',
+    providerType: 'web-bridge',
+    baseUrl: 'http://127.0.0.1:8787',
+    defaultModel: '网页端当前模式',
+    authType: 'none',
+    maxTokensField: 'max_tokens',
+    builtIn: true,
+    editable: false,
+    enabled: true,
+    keySaved: false,
+  },
 ]
+
+const mockWebBridgeState: WebBridgeStateSnapshot = {
+  jobs: [],
+  events: [],
+  bridge: {
+    connected: false,
+    lastSeen: null,
+    pageUrl: null,
+    pageTitle: null,
+  },
+  qaEnabled: true,
+  serviceRunning: false,
+}
+
+function mockStartWebBridge(): StartWebBridgeResult {
+  mockWebBridgeState.serviceRunning = true
+  mockWebBridgeState.bridge.connected = true
+  mockWebBridgeState.bridge.lastSeen = Date.now().toString()
+  mockWebBridgeState.bridge.pageUrl = 'https://chat.deepseek.com'
+  mockWebBridgeState.bridge.pageTitle = 'DeepSeek'
+  mockWebBridgeState.events.unshift({
+    id: `event-${Date.now()}`,
+    kind: 'service',
+    message: '预览模式：模拟启动网页桥并打开 Edge。',
+    at: Date.now().toString(),
+    jobId: null,
+  })
+  return {
+    ok: true,
+    message: '预览模式：已模拟启动网页桥。',
+    state: mockWebBridgeState,
+  }
+}
 
 const mockPromptPreview: PromptBuildResult = {
   chatId: 'jingling-first-chat',

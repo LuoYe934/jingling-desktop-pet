@@ -51,6 +51,7 @@ struct TavernPaths {
     relationships: PathBuf,
     memory_cards: PathBuf,
     avatars: PathBuf,
+    providers: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -433,8 +434,19 @@ pub struct ProviderConfig {
     pub provider_type: String,
     pub base_url: String,
     pub default_model: String,
+    pub auth_type: String,
+    pub max_tokens_field: String,
+    pub built_in: bool,
+    pub editable: bool,
     pub enabled: bool,
     pub key_saved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConnectionTestResult {
+    pub ok: bool,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -815,6 +827,7 @@ fn tavern_paths(app: &AppHandle) -> Result<TavernPaths, String> {
         relationships: root.join("relationships"),
         memory_cards: root.join("memory_cards.json"),
         avatars: root.join("avatars"),
+        providers: root.join("providers.json"),
         root,
     };
     for dir in [
@@ -842,6 +855,10 @@ fn holidays_path(paths: &TavernPaths) -> PathBuf {
 
 fn memory_cards_path(paths: &TavernPaths) -> PathBuf {
     paths.memory_cards.clone()
+}
+
+fn providers_path(paths: &TavernPaths) -> PathBuf {
+    paths.providers.clone()
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
@@ -2220,17 +2237,6 @@ struct RelationshipThinking {
     kind: &'static str,
 }
 
-#[derive(Debug, Serialize)]
-struct RelationshipScoreRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-    stream: bool,
-    temperature: f32,
-    max_tokens: u16,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<RelationshipThinking>,
-}
-
 #[derive(Debug, Deserialize)]
 struct RelationshipScoreResponse {
     choices: Vec<RelationshipScoreChoice>,
@@ -2247,12 +2253,15 @@ struct RelationshipScoreMessage {
 }
 
 #[derive(Debug, Serialize)]
-struct SummaryRequest {
+pub struct LlmChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
     temperature: f32,
-    max_tokens: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<RelationshipThinking>,
 }
@@ -2271,6 +2280,60 @@ struct SummaryChoice {
 #[derive(Debug, Deserialize)]
 struct SummaryMessage {
     content: String,
+}
+
+pub fn llm_chat_request(
+    provider: &ProviderConfig,
+    model: String,
+    messages: Vec<ChatMessage>,
+    stream: bool,
+    temperature: f32,
+    max_tokens: u16,
+) -> LlmChatRequest {
+    let (max_tokens_value, max_completion_tokens_value) = if provider.max_tokens_field == "max_completion_tokens" {
+        (None, Some(max_tokens))
+    } else {
+        (Some(max_tokens), None)
+    };
+    LlmChatRequest {
+        model,
+        messages,
+        stream,
+        temperature,
+        max_tokens: max_tokens_value,
+        max_completion_tokens: max_completion_tokens_value,
+        thinking: if provider.provider_type == "deepseek" {
+            Some(RelationshipThinking { kind: "disabled" })
+        } else {
+            None
+        },
+    }
+}
+
+pub fn with_provider_auth(
+    request: reqwest::RequestBuilder,
+    provider: &ProviderConfig,
+    api_key: Option<String>,
+) -> reqwest::RequestBuilder {
+    let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) else {
+        return request;
+    };
+    if provider.auth_type == "api-key" {
+        request.header("api-key", api_key)
+    } else if provider.auth_type == "none" || provider.provider_type == "ollama" {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    }
+}
+
+pub fn provider_chat_completions_url(provider: &ProviderConfig) -> String {
+    let trimmed = provider.base_url.trim().trim_end_matches('/');
+    if trimmed.to_ascii_lowercase().contains("/chat/completions") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/chat/completions")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2308,9 +2371,10 @@ async fn model_relationship_score(
         excerpt(user_input, 600),
         excerpt(assistant_reply, 600),
     );
-    let body = RelationshipScoreRequest {
-        model: model.to_string(),
-        messages: vec![
+    let body = llm_chat_request(
+        provider,
+        model.to_string(),
+        vec![
             ChatMessage {
                 role: "system".to_string(),
                 content: "你是关系变化评分器。只输出一个 JSON 对象，不要输出解释、Markdown 或代码块。".to_string(),
@@ -2320,20 +2384,16 @@ async fn model_relationship_score(
                 content: prompt,
             },
         ],
-        stream: false,
-        temperature: 0.0,
-        max_tokens: 120,
-        thinking: if provider.provider_type == "deepseek" {
-            Some(RelationshipThinking { kind: "disabled" })
-        } else {
-            None
-        },
-    };
+        false,
+        0.0,
+        120,
+    );
 
-    let mut request = client.post(&provider.base_url).json(&body);
-    if let Some(api_key) = api_key {
-        request = request.bearer_auth(api_key);
-    }
+    let request = with_provider_auth(
+        client.post(provider_chat_completions_url(provider)).json(&body),
+        provider,
+        api_key,
+    );
     let response = request
         .send()
         .await
@@ -2510,9 +2570,10 @@ async fn model_memory_extraction(
         excerpt(user_input, 900),
         excerpt(assistant_reply, 700),
     );
-    let body = SummaryRequest {
-        model: model.to_string(),
-        messages: vec![
+    let body = llm_chat_request(
+        provider,
+        model.to_string(),
+        vec![
             ChatMessage {
                 role: "system".to_string(),
                 content: "你是记忆卡片提取器。只能输出一个 JSON 对象，不要输出解释、Markdown 或代码块。".to_string(),
@@ -2522,20 +2583,16 @@ async fn model_memory_extraction(
                 content: prompt,
             },
         ],
-        stream: false,
-        temperature: 0.0,
-        max_tokens: 700,
-        thinking: if provider.provider_type == "deepseek" {
-            Some(RelationshipThinking { kind: "disabled" })
-        } else {
-            None
-        },
-    };
+        false,
+        0.0,
+        700,
+    );
 
-    let mut request = client.post(&provider.base_url).json(&body);
-    if let Some(api_key) = api_key {
-        request = request.bearer_auth(api_key);
-    }
+    let request = with_provider_auth(
+        client.post(provider_chat_completions_url(provider)).json(&body),
+        provider,
+        api_key,
+    );
     let response = request
         .send()
         .await
@@ -2730,7 +2787,7 @@ pub async fn extract_memory_cards_after_exchange(
         return Ok(MemoryExtractionSummary::default());
     }
 
-    let provider = match provider_by_id(Some(&prompt.provider_id)) {
+    let provider = match provider_by_id(Some(&app), Some(&prompt.provider_id)) {
         Ok(provider) => provider,
         Err(_) => return Ok(MemoryExtractionSummary::default()),
     };
@@ -2788,7 +2845,7 @@ pub async fn extract_memory_cards_for_latest_chat(
     let Some(assistant) = assistant else {
         return Ok(MemoryExtractionSummary::default());
     };
-    let provider = provider_by_id(chat.provider_id.as_deref())?;
+    let provider = provider_by_id(Some(&app), chat.provider_id.as_deref())?;
     let prompt = PromptBuildResult {
         chat_id: chat.id.clone(),
         character_id: chat.character_id.clone(),
@@ -2835,7 +2892,7 @@ pub async fn judge_relationship_after_exchange(
         LocalRelationshipDecision::Apply(score) => Some(score),
         LocalRelationshipDecision::NoChange => None,
         LocalRelationshipDecision::NeedsModel => {
-            let provider = match provider_by_id(Some(&prompt.provider_id)) {
+            let provider = match provider_by_id(Some(&app), Some(&prompt.provider_id)) {
                 Ok(provider) => provider,
                 Err(_) => return Ok(()),
             };
@@ -4406,6 +4463,10 @@ fn provider_env_var(provider_id: &str) -> Option<&'static str> {
         "deepseek" => Some("DEEPSEEK_API_KEY"),
         "openai-compatible" => Some("OPENAI_API_KEY"),
         "openrouter" => Some("OPENROUTER_API_KEY"),
+        "dashscope" => Some("DASHSCOPE_API_KEY"),
+        "zhipu" => Some("ZHIPU_API_KEY"),
+        "minimax" => Some("MINIMAX_API_KEY"),
+        "mimo" => Some("MIMO_API_KEY"),
         _ => None,
     }
 }
@@ -4430,50 +4491,116 @@ pub fn read_provider_api_key(provider_id: &str) -> Result<Option<String>, String
 }
 
 fn provider_key_saved(provider_id: &str) -> bool {
+    if provider_id == crate::web_bridge::WEB_BRIDGE_PROVIDER_ID {
+        return false;
+    }
     read_provider_api_key(provider_id)
         .map(|value| value.is_some())
         .unwrap_or(false)
 }
 
+fn builtin_provider(
+    id: &str,
+    name: &str,
+    provider_type: &str,
+    base_url: &str,
+    default_model: &str,
+    auth_type: &str,
+    max_tokens_field: &str,
+) -> ProviderConfig {
+    ProviderConfig {
+        id: id.to_string(),
+        name: name.to_string(),
+        provider_type: provider_type.to_string(),
+        base_url: base_url.to_string(),
+        default_model: default_model.to_string(),
+        auth_type: auth_type.to_string(),
+        max_tokens_field: max_tokens_field.to_string(),
+        built_in: true,
+        editable: false,
+        enabled: true,
+        key_saved: false,
+    }
+}
+
 fn default_providers() -> Vec<ProviderConfig> {
     let mut providers = vec![
-        ProviderConfig {
-            id: DEFAULT_PROVIDER_ID.to_string(),
-            name: "DeepSeek".to_string(),
-            provider_type: "deepseek".to_string(),
-            base_url: DEEPSEEK_URL.to_string(),
-            default_model: DEFAULT_MODEL.to_string(),
-            enabled: true,
-            key_saved: false,
-        },
-        ProviderConfig {
-            id: "openai-compatible".to_string(),
-            name: "OpenAI 兼容接口".to_string(),
-            provider_type: "openai-compatible".to_string(),
-            base_url: "https://api.openai.com/v1/chat/completions".to_string(),
-            default_model: "gpt-4.1-mini".to_string(),
-            enabled: true,
-            key_saved: false,
-        },
-        ProviderConfig {
-            id: "openrouter".to_string(),
-            name: "OpenRouter".to_string(),
-            provider_type: "openai-compatible".to_string(),
-            base_url: "https://openrouter.ai/api/v1/chat/completions".to_string(),
-            default_model: "deepseek/deepseek-chat".to_string(),
-            enabled: true,
-            key_saved: false,
-        },
-        ProviderConfig {
-            id: "ollama".to_string(),
-            name: "Ollama 本地模型".to_string(),
-            provider_type: "ollama".to_string(),
-            base_url: "http://localhost:11434/v1/chat/completions".to_string(),
-            default_model: "qwen3".to_string(),
-            enabled: true,
-            key_saved: false,
-        },
+        builtin_provider(DEFAULT_PROVIDER_ID, "DeepSeek", "deepseek", DEEPSEEK_URL, DEFAULT_MODEL, "bearer", "max_tokens"),
+        builtin_provider(
+            "openai-compatible",
+            "OpenAI 兼容接口",
+            "openai-compatible",
+            "https://api.openai.com/v1/chat/completions",
+            "gpt-4.1-mini",
+            "bearer",
+            "max_tokens",
+        ),
+        builtin_provider(
+            "openrouter",
+            "OpenRouter",
+            "openai-compatible",
+            "https://openrouter.ai/api/v1/chat/completions",
+            "deepseek/deepseek-chat",
+            "bearer",
+            "max_tokens",
+        ),
+        builtin_provider(
+            "dashscope",
+            "千问 / 阿里百炼",
+            "openai-compatible",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "qwen-plus",
+            "bearer",
+            "max_tokens",
+        ),
+        builtin_provider(
+            "zhipu",
+            "智谱 GLM",
+            "openai-compatible",
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            "glm-4.7-flash",
+            "bearer",
+            "max_tokens",
+        ),
+        builtin_provider(
+            "minimax",
+            "MiniMax",
+            "openai-compatible",
+            "https://api.minimax.io/v1/chat/completions",
+            "MiniMax-M2.7",
+            "bearer",
+            "max_completion_tokens",
+        ),
+        builtin_provider(
+            "mimo",
+            "小米 MiMo",
+            "openai-compatible",
+            "https://api.mimo-v2.com/v1/chat/completions",
+            "mimo-v2-pro",
+            "bearer",
+            "max_completion_tokens",
+        ),
+        builtin_provider(
+            "ollama",
+            "Ollama 本地模型",
+            "ollama",
+            "http://localhost:11434/v1/chat/completions",
+            "qwen3",
+            "none",
+            "max_tokens",
+        ),
     ];
+    if crate::web_bridge::qa_features_enabled() {
+        providers.push(builtin_provider(
+            crate::web_bridge::WEB_BRIDGE_PROVIDER_ID,
+            "DeepSeek 网页桥",
+            crate::web_bridge::WEB_BRIDGE_PROVIDER_TYPE,
+            crate::web_bridge::WEB_BRIDGE_URL,
+            "网页端当前模式",
+            "none",
+            "max_tokens",
+        ));
+    }
 
     for provider in &mut providers {
         provider.key_saved = provider_key_saved(&provider.id);
@@ -4481,12 +4608,111 @@ fn default_providers() -> Vec<ProviderConfig> {
     providers
 }
 
-pub fn provider_by_id(provider_id: Option<&str>) -> Result<ProviderConfig, String> {
+fn normalize_auth_type(value: &str) -> String {
+    match value.trim() {
+        "api-key" => "api-key".to_string(),
+        "none" => "none".to_string(),
+        _ => "bearer".to_string(),
+    }
+}
+
+fn normalize_max_tokens_field(value: &str) -> String {
+    match value.trim() {
+        "max_completion_tokens" => "max_completion_tokens".to_string(),
+        _ => "max_tokens".to_string(),
+    }
+}
+
+fn normalize_provider(mut provider: ProviderConfig, fallback_id: &str) -> ProviderConfig {
+    if provider.id.trim().is_empty() {
+        provider.id = new_id("provider", fallback_id);
+    } else {
+        provider.id = sanitize_id(&provider.id, fallback_id);
+    }
+    if provider.name.trim().is_empty() {
+        provider.name = provider.id.clone();
+    }
+    if provider.provider_type.trim().is_empty() {
+        provider.provider_type = "openai-compatible".to_string();
+    }
+    provider.provider_type = provider.provider_type.trim().to_string();
+    provider.base_url = provider.base_url.trim().to_string();
+    provider.default_model = provider.default_model.trim().to_string();
+    provider.auth_type = normalize_auth_type(&provider.auth_type);
+    provider.max_tokens_field = normalize_max_tokens_field(&provider.max_tokens_field);
+    if provider.provider_type == crate::web_bridge::WEB_BRIDGE_PROVIDER_TYPE {
+        provider.auth_type = "none".to_string();
+        provider.max_tokens_field = "max_tokens".to_string();
+    }
+    provider.key_saved = false;
+    provider
+}
+
+fn load_custom_providers(app: &AppHandle) -> Result<Vec<ProviderConfig>, String> {
+    let paths = tavern_paths(app)?;
+    let path = providers_path(&paths);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let items = read_json::<Vec<ProviderConfig>>(&path)?;
+    Ok(items
+        .into_iter()
+        .map(|provider| normalize_provider(provider, "custom-provider"))
+        .collect())
+}
+
+fn save_custom_providers(app: &AppHandle, providers: &[ProviderConfig]) -> Result<(), String> {
+    let paths = tavern_paths(app)?;
+    let mut items = providers
+        .iter()
+        .cloned()
+        .map(|mut provider| {
+            provider.key_saved = false;
+            provider.built_in = false;
+            provider.editable = true;
+            provider
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| a.name.cmp(&b.name));
+    write_json(&providers_path(&paths), &items)
+}
+
+fn merged_providers(app: Option<&AppHandle>) -> Vec<ProviderConfig> {
+    let mut providers = default_providers();
+    if let Some(app) = app {
+        if let Ok(custom) = load_custom_providers(app) {
+            for custom_provider in custom {
+                let normalized = normalize_provider(custom_provider, "provider");
+                if let Some(existing) = providers.iter_mut().find(|provider| provider.id == normalized.id) {
+                    let built_in = existing.built_in;
+                    let editable = existing.editable;
+                    *existing = ProviderConfig {
+                        built_in,
+                        editable,
+                        ..normalized
+                    };
+                } else {
+                    providers.push(ProviderConfig {
+                        built_in: false,
+                        editable: true,
+                        ..normalized
+                    });
+                }
+            }
+        }
+    }
+    for provider in &mut providers {
+        provider.key_saved = provider_key_saved(&provider.id);
+    }
+    providers
+}
+
+pub fn provider_by_id(app: Option<&AppHandle>, provider_id: Option<&str>) -> Result<ProviderConfig, String> {
     let wanted = provider_id.unwrap_or(DEFAULT_PROVIDER_ID);
-    default_providers()
+    merged_providers(app)
         .into_iter()
         .find(|provider| provider.id == wanted)
-        .or_else(|| default_providers().into_iter().find(|provider| provider.id == DEFAULT_PROVIDER_ID))
+        .or_else(|| merged_providers(app).into_iter().find(|provider| provider.id == DEFAULT_PROVIDER_ID))
         .ok_or_else(|| "没有可用 Provider".to_string())
 }
 
@@ -5172,7 +5398,7 @@ pub fn build_prompt_for_chat(
         .or_else(|| chat.provider_id.clone())
         .or_else(|| character.default_provider_id.clone())
         .unwrap_or_else(|| DEFAULT_PROVIDER_ID.to_string());
-    let provider = provider_by_id(Some(&selected_provider_id))?;
+    let provider = provider_by_id(Some(app), Some(&selected_provider_id))?;
     let selected_model = model
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| provider.default_model.clone());
@@ -5392,17 +5618,17 @@ fn select_compaction_messages(
         })
         .sum::<usize>();
     let threshold_tokens = (max_input_tokens / AUTO_COMPACTION_BUDGET_DIVISOR).max(1);
-    let over_message_limit = active_message_count > keep_raw_count;
+    let over_message_limit = active_message_count >= keep_raw_count;
     let over_token_threshold = active_token_estimate > threshold_tokens;
 
     if !force && !over_message_limit && !over_token_threshold {
         return None;
     }
 
-    let protected_start = if over_message_limit {
-        active_indices.len().saturating_sub(keep_raw_count)
-    } else {
+    let protected_start = if over_message_limit || over_token_threshold {
         active_indices.len() / 2
+    } else {
+        active_indices.len().saturating_sub(keep_raw_count)
     };
     let older_indices = &active_indices[..protected_start];
     let skipped_bookmarked_count = older_indices
@@ -5416,11 +5642,7 @@ fn select_compaction_messages(
             (!message.bookmarked).then(|| message.id.clone())
         })
         .collect::<Vec<_>>();
-    let target_count = if force || (over_token_threshold && !over_message_limit) {
-        eligible_ids.len().min(batch_size)
-    } else {
-        batch_size
-    };
+    let target_count = eligible_ids.len().min(batch_size);
     let trigger = if over_message_limit {
         "message-count"
     } else if over_token_threshold {
@@ -5466,7 +5688,7 @@ fn resolve_chat_runtime(
         .or_else(|| chat.provider_id.clone())
         .or_else(|| character.default_provider_id.clone())
         .unwrap_or_else(|| DEFAULT_PROVIDER_ID.to_string());
-    let provider = provider_by_id(Some(&selected_provider_id))?;
+    let provider = provider_by_id(Some(app), Some(&selected_provider_id))?;
     let selected_model = model
         .filter(|value| !value.trim().is_empty())
         .map(|value| value.to_string())
@@ -5506,9 +5728,10 @@ async fn summarize_chat_messages(
     let user_prompt = format!(
         "已有长期摘要:\n{old_summary}\n\n本次需要整理进长期摘要的旧消息:\n{transcript}\n\n请合并成新的完整长期摘要。固定使用这些栏目并保留栏目名:\n- 用户身份/偏好\n- 和角色的重要关系\n- 已发生的重要事件\n- 未完成的话题/承诺\n- 用户情绪倾向\n- 角色需要记住的称呼、禁忌、习惯\n\n要求: 只根据消息和旧摘要整理，不要编造；不确定就写“未记录”；保留称呼、禁忌、承诺、关系变化和重要事件；语言简洁；不要输出 Markdown 代码块。"
     );
-    let body = SummaryRequest {
-        model: model.to_string(),
-        messages: vec![
+    let body = llm_chat_request(
+        provider,
+        model.to_string(),
+        vec![
             ChatMessage {
                 role: "system".to_string(),
                 content: "你是角色聊天的长期记忆整理器。你只负责把旧对话合并成结构化摘要，不能添加没有根据的新事实。".to_string(),
@@ -5518,20 +5741,16 @@ async fn summarize_chat_messages(
                 content: user_prompt,
             },
         ],
-        stream: false,
-        temperature: 0.1,
-        max_tokens: SUMMARY_OUTPUT_TOKENS,
-        thinking: if provider.provider_type == "deepseek" {
-            Some(RelationshipThinking { kind: "disabled" })
-        } else {
-            None
-        },
-    };
+        false,
+        0.1,
+        SUMMARY_OUTPUT_TOKENS,
+    );
 
-    let mut request = client.post(&provider.base_url).json(&body);
-    if let Some(api_key) = api_key {
-        request = request.bearer_auth(api_key);
-    }
+    let request = with_provider_auth(
+        client.post(provider_chat_completions_url(provider)).json(&body),
+        provider,
+        api_key,
+    );
     let response = request
         .send()
         .await
@@ -6081,7 +6300,7 @@ pub fn update_chat_settings(
         chat.provider_id = if value.trim().is_empty() {
             None
         } else {
-            Some(provider_by_id(Some(&value))?.id)
+            Some(provider_by_id(Some(&app), Some(&value))?.id)
         };
     }
 
@@ -6261,12 +6480,75 @@ pub fn export_preset(app: AppHandle, preset_id: String, path: String) -> Result<
 }
 
 #[tauri::command]
-pub fn list_providers() -> Result<Vec<ProviderConfig>, String> {
-    Ok(default_providers())
+pub fn list_providers(app: AppHandle) -> Result<Vec<ProviderConfig>, String> {
+    Ok(merged_providers(Some(&app)))
+}
+
+#[tauri::command]
+pub fn save_provider(app: AppHandle, provider: ProviderConfig) -> Result<ProviderConfig, String> {
+    let mut next = normalize_provider(provider, "custom-provider");
+    if next.provider_type == crate::web_bridge::WEB_BRIDGE_PROVIDER_TYPE {
+        return Err("DeepSeek 网页桥是 QA 内置 Provider，不能作为自定义 Provider 保存。".to_string());
+    }
+    if next.base_url.trim().is_empty() {
+        return Err("Provider 接口地址不能为空。".to_string());
+    }
+    if next.default_model.trim().is_empty() {
+        return Err("Provider 默认模型不能为空。".to_string());
+    }
+
+    if let Some(defaults) = default_providers().into_iter().find(|item| item.id == next.id) {
+        next.built_in = false;
+        next.editable = true;
+        next.provider_type = defaults.provider_type;
+        next.auth_type = normalize_auth_type(&next.auth_type);
+        next.max_tokens_field = normalize_max_tokens_field(&next.max_tokens_field);
+    } else {
+        next.built_in = false;
+        next.editable = true;
+    }
+
+    let mut providers = load_custom_providers(&app)?;
+    if let Some(existing) = providers.iter_mut().find(|item| item.id == next.id) {
+        *existing = next.clone();
+    } else {
+        providers.push(next.clone());
+    }
+    save_custom_providers(&app, &providers)?;
+    provider_by_id(Some(&app), Some(&next.id))
+}
+
+#[tauri::command]
+pub fn delete_provider(app: AppHandle, provider_id: String) -> Result<Vec<ProviderConfig>, String> {
+    if default_providers().iter().any(|provider| provider.id == provider_id) {
+        return Err("内置 Provider 不能删除，可以使用重置。".to_string());
+    }
+    let mut providers = load_custom_providers(&app)?;
+    providers.retain(|provider| provider.id != provider_id);
+    save_custom_providers(&app, &providers)?;
+    Ok(merged_providers(Some(&app)))
+}
+
+#[tauri::command]
+pub fn reset_provider(app: AppHandle, provider_id: String) -> Result<ProviderConfig, String> {
+    let mut providers = load_custom_providers(&app)?;
+    providers.retain(|provider| provider.id != provider_id);
+    save_custom_providers(&app, &providers)?;
+    let defaults = default_providers()
+        .into_iter()
+        .find(|provider| provider.id == provider_id)
+        .ok_or_else(|| "没有找到要重置的内置 Provider。".to_string())?;
+    Ok(ProviderConfig {
+        key_saved: provider_key_saved(&defaults.id),
+        ..defaults
+    })
 }
 
 #[tauri::command]
 pub fn save_provider_key(provider_id: String, api_key: String) -> Result<(), String> {
+    if provider_id == crate::web_bridge::WEB_BRIDGE_PROVIDER_ID {
+        return Err("DeepSeek 网页桥不需要 API Key。".to_string());
+    }
     let entry = keyring::Entry::new(SERVICE_NAME, &provider_credential_user(&provider_id))
         .map_err(|err| format!("系统凭据初始化失败: {err}"))?;
     let trimmed = api_key.trim();
@@ -6277,6 +6559,61 @@ pub fn save_provider_key(provider_id: String, api_key: String) -> Result<(), Str
     entry
         .set_password(trimmed)
         .map_err(|err| format!("保存 Provider API Key 失败: {err}"))
+}
+
+#[tauri::command]
+pub async fn test_provider_connection(
+    app: AppHandle,
+    provider_id: String,
+    state: tauri::State<'_, crate::deepseek::AppState>,
+) -> Result<ProviderConnectionTestResult, String> {
+    let provider = provider_by_id(Some(&app), Some(&provider_id))?;
+    if provider.provider_type == crate::web_bridge::WEB_BRIDGE_PROVIDER_TYPE {
+        return Ok(ProviderConnectionTestResult {
+            ok: false,
+            message: "网页桥请使用“启动网页桥并打开 Edge”，不走 API 测试。".to_string(),
+        });
+    }
+    let api_key = read_provider_api_key(&provider.id)?;
+    if provider.provider_type != "ollama" && provider.auth_type != "none" && api_key.is_none() {
+        return Ok(ProviderConnectionTestResult {
+            ok: false,
+            message: "还没有保存 API Key。".to_string(),
+        });
+    }
+    let body = llm_chat_request(
+        &provider,
+        provider.default_model.clone(),
+        vec![ChatMessage {
+            role: "user".to_string(),
+            content: "请只回复 ok".to_string(),
+        }],
+        false,
+        0.0,
+        8,
+    );
+    let request = with_provider_auth(
+        state.client.post(provider_chat_completions_url(&provider)).json(&body),
+        &provider,
+        api_key,
+    );
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("Provider 测试请求失败: {err}"))?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if status.is_success() {
+        Ok(ProviderConnectionTestResult {
+            ok: true,
+            message: "连接成功。".to_string(),
+        })
+    } else {
+        Ok(ProviderConnectionTestResult {
+            ok: false,
+            message: format!("返回 {status}: {}", limit_text(&text, 240)),
+        })
+    }
 }
 
 #[tauri::command]
@@ -6507,14 +6844,25 @@ mod tests {
     }
 
     #[test]
-    fn auto_compaction_waits_for_full_batch_but_manual_can_force() {
+    fn auto_compaction_triggers_at_context_limit_and_summarizes_front_half() {
         let mut chat = chat_fixture("chat", "title", "1");
-        chat.messages = (0..5).map(message_fixture).collect();
+        chat.messages = (0..4).map(message_fixture).collect();
 
-        assert!(select_compaction_messages(&chat, 4, 1000, false).is_none());
-        let forced = select_compaction_messages(&chat, 4, 1000, true).expect("forced selection");
-        assert_eq!(forced.message_ids, vec!["msg-0".to_string()]);
-        assert_eq!(forced.trigger, "message-count");
+        let selection = select_compaction_messages(&chat, 4, 1000, false).expect("selection");
+
+        assert_eq!(selection.message_ids, vec!["msg-0".to_string(), "msg-1".to_string()]);
+        assert_eq!(selection.trigger, "message-count");
+        assert_eq!(selection.active_message_count, 4);
+    }
+
+    #[test]
+    fn web_bridge_provider_is_hidden_without_qa_gate() {
+        if crate::web_bridge::qa_features_enabled() {
+            return;
+        }
+        assert!(!default_providers()
+            .iter()
+            .any(|provider| provider.id == crate::web_bridge::WEB_BRIDGE_PROVIDER_ID));
     }
 
     #[test]
