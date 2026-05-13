@@ -1,5 +1,5 @@
 import { Download, FileUp, Plus, Save } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { type ChangeEvent, useEffect, useState } from 'react'
 import { estimatePresetBaseTokens } from '../../lib/tokenEstimate'
 import { usePetStore } from '../../stores/petStore'
 import type { PromptPreset } from '../../types/tauri'
@@ -27,6 +27,72 @@ function emptyPreset(): PromptPreset {
     createdAt: '',
     updatedAt: '',
   }
+}
+
+interface NumericDraftInputProps {
+  value: number
+  min?: number
+  max?: number
+  step?: number | string
+  onCommit: (value: number) => void
+}
+
+function formatNumericDraft(value: number) {
+  return Number.isFinite(value) ? String(value) : ''
+}
+
+function NumericDraftInput({ value, min, max, step, onCommit }: NumericDraftInputProps) {
+  const [text, setText] = useState(formatNumericDraft(value))
+  const [isEditing, setIsEditing] = useState(false)
+
+  useEffect(() => {
+    if (!isEditing) setText(formatNumericDraft(value))
+  }, [isEditing, value])
+
+  function parse(raw: string) {
+    if (raw.trim() === '') return undefined
+    const next = Number(raw)
+    return Number.isFinite(next) ? next : undefined
+  }
+
+  function clamp(next: number) {
+    let bounded = next
+    if (typeof min === 'number') bounded = Math.max(min, bounded)
+    if (typeof max === 'number') bounded = Math.min(max, bounded)
+    return bounded
+  }
+
+  function handleChange(event: ChangeEvent<HTMLInputElement>) {
+    const raw = event.target.value
+    setText(raw)
+    const next = parse(raw)
+    if (next !== undefined) onCommit(next)
+  }
+
+  function handleBlur() {
+    setIsEditing(false)
+    const next = parse(text)
+    if (next === undefined) {
+      setText(formatNumericDraft(value))
+      return
+    }
+    const bounded = clamp(next)
+    if (bounded !== value) onCommit(bounded)
+    setText(formatNumericDraft(bounded))
+  }
+
+  return (
+    <input
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={text}
+      onFocus={() => setIsEditing(true)}
+      onChange={handleChange}
+      onBlur={handleBlur}
+    />
+  )
 }
 
 export function PresetEditor({ presets, onSave, onImport, onExport }: PresetEditorProps) {
@@ -122,48 +188,43 @@ export function PresetEditor({ presets, onSave, onImport, onExport }: PresetEdit
           </label>
           <label>
             上下文条数
-            <input
-              type="number"
+            <NumericDraftInput
               min={2}
               max={200}
               step={1}
               value={draft.contextMessages}
-              onChange={(event) => update('contextMessages', Number(event.target.value))}
+              onCommit={(value) => update('contextMessages', value)}
             />
           </label>
           <label>
             输入预算 tokens
-            <input
-              type="number"
+            <NumericDraftInput
               value={draft.maxInputChars}
-              onChange={(event) => update('maxInputChars', Number(event.target.value))}
+              onCommit={(value) => update('maxInputChars', value)}
             />
           </label>
           <label>
             最大输出
-            <input
-              type="number"
+            <NumericDraftInput
               value={draft.maxOutputTokens}
-              onChange={(event) => update('maxOutputTokens', Number(event.target.value))}
+              onCommit={(value) => update('maxOutputTokens', value)}
             />
           </label>
           <label>
             温度
-            <input
-              type="number"
-              min="0"
-              max="2"
+            <NumericDraftInput
+              min={0}
+              max={2}
               step="0.05"
               value={draft.temperature}
-              onChange={(event) => update('temperature', Number(event.target.value))}
+              onCommit={(value) => update('temperature', value)}
             />
           </label>
           <label>
-            回复字数
-            <input
-              type="number"
+            回复字数上限
+            <NumericDraftInput
               value={draft.replyLimit}
-              onChange={(event) => update('replyLimit', Number(event.target.value))}
+              onCommit={(value) => update('replyLimit', value)}
             />
           </label>
         </div>

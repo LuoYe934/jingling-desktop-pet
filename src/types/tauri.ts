@@ -1,4 +1,5 @@
 export type ChatRole = 'user' | 'assistant' | 'system'
+export type ModeChatScope = 'chat' | 'free-mode' | 'story-mode'
 
 export interface ChatMessage {
   id: string
@@ -226,6 +227,8 @@ export interface BuiltinInstallResult {
 
 export interface ChatChunkPayload {
   content: string
+  eventScope?: ModeChatScope
+  requestId?: string | null
 }
 
 export interface ChatDonePayload {
@@ -233,12 +236,20 @@ export interface ChatDonePayload {
   chatId: string
   assistantCreatedAt: string
   cancelled?: boolean
+  eventScope?: ModeChatScope
+  requestId?: string | null
   promptTokens?: number | null
   completionTokens?: number | null
   totalTokens?: number | null
   promptCacheHitTokens?: number | null
   promptCacheMissTokens?: number | null
   promptCacheHitRate?: number | null
+}
+
+export interface ChatErrorPayload {
+  message: string
+  eventScope?: ModeChatScope
+  requestId?: string | null
 }
 
 export interface ChatCompactedPayload {
@@ -255,10 +266,6 @@ export interface ChatCompactedPayload {
 
 export interface ChatCompactErrorPayload {
   chatId: string
-  message: string
-}
-
-export interface ChatErrorPayload {
   message: string
 }
 
@@ -302,6 +309,45 @@ export interface StartWebBridgeResult {
   state: WebBridgeStateSnapshot
 }
 
+export interface StageSprite {
+  id: string
+  name: string
+  image: string
+  description: string
+}
+
+export interface StageExpression {
+  id: string
+  name: string
+  spriteId: string
+  prompt: string
+}
+
+export interface StageScene {
+  id: string
+  name: string
+  background: string
+  prompt: string
+}
+
+export interface StageBgm {
+  id: string
+  name: string
+  audio: string
+  prompt: string
+}
+
+export interface CharacterStageConfig {
+  enabled: boolean
+  sprites: StageSprite[]
+  expressions: StageExpression[]
+  scenes: StageScene[]
+  bgms: StageBgm[]
+  defaultSceneId?: string | null
+  defaultExpressionId?: string | null
+  outputFormat: 'multiFrameJson' | string
+}
+
 export interface TavernCharacter {
   id: string
   name: string
@@ -317,6 +363,7 @@ export interface TavernCharacter {
   defaultProviderId?: string | null
   useCustomRelationshipPrompts: boolean
   relationshipStagePrompts: RelationshipStagePrompts
+  stageConfig?: CharacterStageConfig
   createdAt: string
   updatedAt: string
 }

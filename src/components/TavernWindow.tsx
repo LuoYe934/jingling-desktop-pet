@@ -55,6 +55,8 @@ import {
   saveProviderKey,
   saveWorldbook,
   showChatWindow,
+  showFreeModeWindow,
+  showStoryModeWindow,
   getDeepSeekWebBridgeState,
   startDeepSeekWebBridge,
   startWindowDrag,
@@ -132,6 +134,7 @@ export function TavernWindow() {
   const [providers, setProviders] = useState<ProviderConfig[]>([])
   const [relationships, setRelationships] = useState<CharacterRelationship[]>([])
   const [memoryCards, setMemoryCards] = useState<MemoryCard[]>([])
+  const [qaEnabled, setQaEnabled] = useState(false)
   const [status, setStatus] = useState('就绪')
 
   async function refresh() {
@@ -165,6 +168,9 @@ export function TavernWindow() {
     setProviders(nextProviders)
     setRelationships(nextRelationships)
     setMemoryCards(nextMemoryCards)
+    getDeepSeekWebBridgeState()
+      .then((state) => setQaEnabled(state.qaEnabled))
+      .catch(() => setQaEnabled(false))
     return nextChats
   }
 
@@ -326,6 +332,7 @@ export function TavernWindow() {
                 presets={presets}
                 providers={providers}
                 relationships={relationships}
+                qaEnabled={qaEnabled}
                 onSave={(character) => saveAndRefresh(() => saveCharacter(character), '角色已保存')}
                 onImport={(path) => run(() => importCharacterCard(path), '角色卡已导入')}
                 onExport={(characterId, path) => run(() => exportCharacterCard(characterId, path), '角色卡已导出')}
@@ -386,6 +393,7 @@ export function TavernWindow() {
                 onDeleteProvider={(providerId) => run(() => deleteProvider(providerId), 'Provider 已删除')}
                 onResetProvider={(providerId) => run(() => resetProvider(providerId), 'Provider 已重置')}
                 setStatus={setStatus}
+                qaEnabled={qaEnabled}
               />
             )}
           </main>
@@ -402,6 +410,7 @@ function ExtensionPanel({
   onDeleteProvider,
   onResetProvider,
   setStatus,
+  qaEnabled,
 }: {
   providers: ProviderConfig[]
   onSaved: () => void
@@ -409,6 +418,7 @@ function ExtensionPanel({
   onDeleteProvider: (providerId: string) => Promise<void>
   onResetProvider: (providerId: string) => Promise<void>
   setStatus: (status: string) => void
+  qaEnabled: boolean
 }) {
   const [providerId, setProviderId] = useState('deepseek')
   const [apiKey, setApiKey] = useState('')
@@ -474,13 +484,27 @@ function ExtensionPanel({
       detail: '需要支持图片输入的视觉模型，或本地多模态模型。',
     },
     {
+      id: 'freeMode',
+      label: '自由模式 QA',
+      badge: 'QA',
+      state: 'ready',
+      detail: '透明桌面悬浮助手：角色立绘、底部聊天、当前窗口标题和浏览器搜索。',
+    },
+    {
+      id: 'storyMode',
+      label: '剧情模式 QA',
+      badge: 'QA',
+      state: 'ready',
+      detail: '视觉小说舞台：背景、立绘、对白、选项和 JSON 场景切换。',
+    },
+    {
       id: 'vectorMemory',
       label: '向量记忆',
       badge: '需向量库',
       state: 'needs',
       detail: '需要 embedding 模型和本地/云端向量数据库。',
     },
-  ]
+  ].filter((feature) => qaEnabled || (feature.id !== 'freeMode' && feature.id !== 'storyMode'))
 
   async function saveKey() {
     if (isWebBridge) {
@@ -758,6 +782,16 @@ function ExtensionPanel({
             className={`feature-switch feature-switch--${feature.state}`}
             type="button"
             onClick={() => {
+              if (feature.id === 'freeMode') {
+                void showFreeModeWindow()
+                setStatus('已打开自由模式 QA')
+                return
+              }
+              if (feature.id === 'storyMode') {
+                void showStoryModeWindow()
+                setStatus('已打开剧情模式 QA')
+                return
+              }
               if (feature.id === 'tts') {
                 void showChatWindow()
                 setStatus('TTS 已移到聊天小窗设置')

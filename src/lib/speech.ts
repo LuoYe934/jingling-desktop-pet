@@ -4,6 +4,7 @@ import { synthesizePiper } from './tauri'
 let activeUtterance: SpeechSynthesisUtterance | null = null
 let pendingSpeechTimer: number | undefined
 let activePiperAudio: HTMLAudioElement | null = null
+let activeQueueId = 0
 
 interface SpeakOptions {
   delayMs?: number
@@ -54,6 +55,7 @@ export function pickSpeechVoice(voices: SpeechSynthesisVoice[], voiceURI: string
 }
 
 export function stopSpeech() {
+  activeQueueId += 1
   if (pendingSpeechTimer !== undefined) {
     window.clearTimeout(pendingSpeechTimer)
     pendingSpeechTimer = undefined
@@ -67,6 +69,60 @@ export function stopSpeech() {
     activePiperAudio = null
   }
   activeUtterance = null
+}
+
+export function splitSpeechSentences(text: string) {
+  const content = text.replace(/\s+/g, ' ').trim()
+  if (!content) return []
+  const parts = content.match(/[^。！？!?；;]+[。！？!?；;]?/g) ?? [content]
+  const merged: string[] = []
+  for (const part of parts.map((item) => item.trim()).filter(Boolean)) {
+    const previous = merged[merged.length - 1]
+    if (previous && previous.length < 12) {
+      merged[merged.length - 1] = `${previous}${part}`
+    } else {
+      merged.push(part)
+    }
+  }
+  return merged.slice(0, 8)
+}
+
+function waitForSpeechIdle(timeoutMs: number) {
+  return new Promise<void>((resolve) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      resolve()
+      return
+    }
+    const started = Date.now()
+    const timer = window.setInterval(() => {
+      const busy = window.speechSynthesis.speaking || Boolean(activeUtterance || activePiperAudio)
+      if (!busy || Date.now() - started > timeoutMs) {
+        window.clearInterval(timer)
+        resolve()
+      }
+    }, 120)
+  })
+}
+
+export async function speakSentenceQueue(text: string, settings: TtsSettings, voices: SpeechSynthesisVoice[]) {
+  const sentences = splitSpeechSentences(text)
+  if (!sentences.length || !settings.enabled) return false
+  const queueId = activeQueueId + 1
+  activeQueueId = queueId
+  stopSpeech()
+  activeQueueId = queueId
+
+  for (const sentence of sentences) {
+    if (queueId !== activeQueueId) return false
+    if (settings.engine === 'piper') {
+      await speakPiperText(sentence, settings, { ignoreEnabled: true }).catch(() => false)
+      await waitForSpeechIdle(45_000)
+    } else {
+      speakLocalText(sentence, settings, voices, { ignoreEnabled: true })
+      await waitForSpeechIdle(Math.max(6_000, sentence.length * 420))
+    }
+  }
+  return true
 }
 
 export async function speakPiperText(

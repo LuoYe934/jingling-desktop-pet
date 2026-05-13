@@ -20,14 +20,19 @@ fn hide_window(app: &tauri::AppHandle, label: &str) {
 pub fn setup(app: &mut App) -> tauri::Result<()> {
     let show_chat = MenuItemBuilder::with_id("show_chat", "打开快捷聊天").build(app)?;
     let show_tavern = MenuItemBuilder::with_id("show_tavern", "打开酒馆管理器").build(app)?;
-    let hide_windows = MenuItemBuilder::with_id("hide_windows", "隐藏聊天窗口").build(app)?;
+    let show_free_mode = MenuItemBuilder::with_id("show_free_mode", "打开自由模式 QA").build(app)?;
+    let show_story_mode = MenuItemBuilder::with_id("show_story_mode", "打开剧情模式 QA").build(app)?;
+    let hide_windows = MenuItemBuilder::with_id("hide_windows", "隐藏聊天和模式窗口").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
-    let menu = MenuBuilder::new(app)
-        .items(&[&show_chat, &show_tavern, &hide_windows, &quit])
-        .build()?;
+
+    let mut menu_builder = MenuBuilder::new(app).items(&[&show_chat, &show_tavern]);
+    if crate::web_bridge::qa_features_enabled() {
+        menu_builder = menu_builder.items(&[&show_free_mode, &show_story_mode]);
+    }
+    let menu = menu_builder.items(&[&hide_windows, &quit]).build()?;
 
     let mut tray_builder = TrayIconBuilder::new()
-        .tooltip("鲸灵桌宠")
+        .tooltip("鲤灵桌宠")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -39,9 +44,19 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                 show_window(app, "pet");
                 show_window(app, "tavern");
             }
+            "show_free_mode" => {
+                show_window(app, "pet");
+                show_window(app, "free-mode");
+            }
+            "show_story_mode" => {
+                show_window(app, "pet");
+                show_window(app, "story-mode");
+            }
             "hide_windows" => {
                 hide_window(app, "chat");
                 hide_window(app, "tavern");
+                hide_window(app, "free-mode");
+                hide_window(app, "story-mode");
             }
             "quit" => app.exit(0),
             _ => {}

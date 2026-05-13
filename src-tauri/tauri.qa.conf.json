@@ -1,0 +1,121 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "pet",
+        "title": "鲸灵",
+        "width": 300,
+        "height": 360,
+        "minWidth": 180,
+        "minHeight": 220,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "center": true,
+        "backgroundColor": "#00000000"
+      },
+      {
+        "label": "chat",
+        "title": "鲸灵小窗",
+        "width": 420,
+        "height": 620,
+        "minWidth": 360,
+        "minHeight": 580,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "zoomHotkeysEnabled": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "tavern",
+        "title": "鲸灵酒馆",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": false,
+        "shadow": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": false,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "free-mode",
+        "title": "鲸灵自由模式 QA",
+        "width": 430,
+        "height": 640,
+        "minWidth": 340,
+        "minHeight": 520,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "zoomHotkeysEnabled": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "center": true,
+        "backgroundColor": "#00000000"
+      },
+      {
+        "label": "story-mode",
+        "title": "鲸灵剧情模式 QA",
+        "width": 1120,
+        "height": 720,
+        "minWidth": 860,
+        "minHeight": 560,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": false,
+        "shadow": true,
+        "zoomHotkeysEnabled": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": false,
+        "visible": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "qa-modes",
+          "description": "Permissions for QA pet, chat, tavern, free mode, and story mode windows.",
+          "windows": ["pet", "chat", "tavern", "free-mode", "story-mode"],
+          "permissions": [
+            "core:default",
+            "core:app:default",
+            "core:event:default",
+            "core:window:default",
+            "core:window:allow-hide",
+            "core:window:allow-show",
+            "core:window:allow-set-focus",
+            "core:window:allow-set-always-on-top",
+            "core:window:allow-set-size",
+            "core:window:allow-start-dragging",
+            "dialog:allow-open",
+            "core:tray:default",
+            "autostart:allow-enable",
+            "autostart:allow-disable",
+            "autostart:allow-is-enabled"
+          ]
+        }
+      ]
+    }
+  }
+}

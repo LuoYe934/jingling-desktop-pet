@@ -568,7 +568,8 @@ export function ChatPanel() {
     let disposed = false
     let cleanup: (() => void) | undefined
     listenToChatEvents({
-      onChunk: ({ content }) => {
+      onChunk: ({ content, eventScope = 'chat' }) => {
+        if (eventScope !== 'chat') return
         setIsStreaming(true)
         setMotion('thinking')
         setMessages((current) => {
@@ -590,7 +591,9 @@ export function ChatPanel() {
         promptCacheHitTokens,
         promptCacheMissTokens,
         promptCacheHitRate,
+        eventScope = 'chat',
       }) => {
+        if (eventScope !== 'chat') return
         setIsStreaming(false)
         setMotion(cancelled ? 'idle' : 'happy')
         if (chatId) {
@@ -641,7 +644,8 @@ export function ChatPanel() {
           window.setTimeout(() => setMotion('idle'), 1200)
         }
       },
-      onError: ({ message }) => {
+      onError: ({ message, eventScope = 'chat' }) => {
+        if (eventScope !== 'chat') return
         setIsStreaming(false)
         setMotion('error')
         setMessages((current) => [

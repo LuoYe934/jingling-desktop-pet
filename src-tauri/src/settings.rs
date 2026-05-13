@@ -30,6 +30,13 @@ pub struct TtsPreviewState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ActiveWindowContext {
+    pub title: String,
+    pub process_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub model: String,
     pub scale: f64,
@@ -126,6 +133,67 @@ fn toggle_window(app: &AppHandle, label: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn qa_modes_enabled() -> bool {
+    crate::web_bridge::qa_features_enabled()
+}
+
+fn ensure_qa_modes_enabled() -> Result<(), String> {
+    if qa_modes_enabled() {
+        Ok(())
+    } else {
+        Err("QA-only feature is not available in this build.".to_string())
+    }
+}
+
+fn encode_url_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            b' ' => encoded.push('+'),
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+#[cfg(not(mobile))]
+fn open_browser_url(url: &str) -> Result<(), String> {
+    let target = url.trim();
+    if target.is_empty() {
+        return Err("URL is empty.".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = "Start-Process -FilePath $env:JINGLING_OPEN_URL";
+        Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script,
+            ])
+            .env("JINGLING_OPEN_URL", target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|err| format!("Failed to open browser: {err}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = target;
+        Err("Opening browser from QA mode is currently only wired for Windows.".to_string())
+    }
 }
 
 #[tauri::command]
@@ -298,6 +366,169 @@ pub fn toggle_tavern_window(app: AppHandle) -> Result<(), String> {
 #[cfg(mobile)]
 pub fn toggle_tavern_window(_app: AppHandle) -> Result<(), String> {
     Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
+pub fn show_free_mode_window(app: AppHandle) -> Result<(), String> {
+    ensure_qa_modes_enabled()?;
+    show_window(&app, "free-mode")
+}
+
+#[tauri::command]
+#[cfg(mobile)]
+pub fn show_free_mode_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
+pub fn hide_free_mode_window(app: AppHandle) -> Result<(), String> {
+    ensure_qa_modes_enabled()?;
+    hide_window(&app, "free-mode")
+}
+
+#[tauri::command]
+#[cfg(mobile)]
+pub fn hide_free_mode_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
+pub fn toggle_free_mode_window(app: AppHandle) -> Result<(), String> {
+    ensure_qa_modes_enabled()?;
+    toggle_window(&app, "free-mode")
+}
+
+#[tauri::command]
+#[cfg(mobile)]
+pub fn toggle_free_mode_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
+pub fn show_story_mode_window(app: AppHandle) -> Result<(), String> {
+    ensure_qa_modes_enabled()?;
+    show_window(&app, "story-mode")
+}
+
+#[tauri::command]
+#[cfg(mobile)]
+pub fn show_story_mode_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
+pub fn hide_story_mode_window(app: AppHandle) -> Result<(), String> {
+    ensure_qa_modes_enabled()?;
+    hide_window(&app, "story-mode")
+}
+
+#[tauri::command]
+#[cfg(mobile)]
+pub fn hide_story_mode_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
+pub fn toggle_story_mode_window(app: AppHandle) -> Result<(), String> {
+    ensure_qa_modes_enabled()?;
+    toggle_window(&app, "story-mode")
+}
+
+#[tauri::command]
+#[cfg(mobile)]
+pub fn toggle_story_mode_window(_app: AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(all(target_os = "windows", not(mobile)))]
+pub fn get_active_window_context() -> Result<ActiveWindowContext, String> {
+    ensure_qa_modes_enabled()?;
+    let script = r#"
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class Win32Foreground {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+}
+"@
+$handle = [Win32Foreground]::GetForegroundWindow()
+$titleBuilder = New-Object System.Text.StringBuilder 512
+[void][Win32Foreground]::GetWindowText($handle, $titleBuilder, $titleBuilder.Capacity)
+$processId = 0
+[void][Win32Foreground]::GetWindowThreadProcessId($handle, [ref]$processId)
+$processName = ""
+if ($processId -gt 0) {
+  try { $processName = (Get-Process -Id $processId -ErrorAction Stop).ProcessName } catch {}
+}
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[pscustomobject]@{
+  title = $titleBuilder.ToString()
+  processName = $processName
+} | ConvertTo-Json -Compress
+"#;
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script,
+        ])
+        .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|err| format!("Failed to inspect active window: {err}"))?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if error.is_empty() {
+            "Failed to inspect active window.".to_string()
+        } else {
+            error
+        });
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    serde_json::from_str::<ActiveWindowContext>(&text)
+        .map_err(|err| format!("Failed to parse active window context: {err}"))
+}
+
+#[tauri::command]
+#[cfg(any(mobile, not(target_os = "windows")))]
+pub fn get_active_window_context() -> Result<ActiveWindowContext, String> {
+    ensure_qa_modes_enabled()?;
+    Ok(ActiveWindowContext {
+        title: String::new(),
+        process_name: String::new(),
+    })
+}
+
+#[tauri::command]
+#[cfg(not(mobile))]
+pub fn open_browser_search(query: String) -> Result<(), String> {
+    ensure_qa_modes_enabled()?;
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err("Search query is empty.".to_string());
+    }
+    let url = format!("https://www.bing.com/search?q={}", encode_url_component(trimmed));
+    open_browser_url(&url)
+}
+
+#[tauri::command]
+#[cfg(mobile)]
+pub fn open_browser_search(_query: String) -> Result<(), String> {
+    ensure_qa_modes_enabled()
 }
 
 #[tauri::command]

@@ -85,6 +85,8 @@ struct TokenUsage {
 #[serde(rename_all = "camelCase")]
 struct ChatChunkPayload {
     content: String,
+    event_scope: String,
+    request_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -94,6 +96,8 @@ struct ChatDonePayload {
     chat_id: String,
     assistant_created_at: String,
     cancelled: bool,
+    event_scope: String,
+    request_id: Option<String>,
     prompt_tokens: Option<u32>,
     completion_tokens: Option<u32>,
     total_tokens: Option<u32>,
@@ -106,6 +110,8 @@ struct ChatDonePayload {
 #[serde(rename_all = "camelCase")]
 struct ChatErrorPayload {
     message: String,
+    event_scope: String,
+    request_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -157,11 +163,26 @@ pub fn write_api_key(api_key: &str) -> Result<(), String> {
         .map_err(|err| format!("保存 DeepSeek API Key 失败: {err}"))
 }
 
-fn emit_error(app: &AppHandle, message: impl Into<String>) {
+fn normalized_event_scope(scope: Option<String>) -> String {
+    match scope.as_deref() {
+        Some("free-mode") => "free-mode".to_string(),
+        Some("story-mode") => "story-mode".to_string(),
+        _ => "chat".to_string(),
+    }
+}
+
+fn emit_error(
+    app: &AppHandle,
+    message: impl Into<String>,
+    event_scope: &str,
+    request_id: Option<&String>,
+) {
     let _ = app.emit(
         "chat:error",
         ChatErrorPayload {
             message: message.into(),
+            event_scope: event_scope.to_string(),
+            request_id: request_id.cloned(),
         },
     );
 }
@@ -173,6 +194,8 @@ fn emit_done(
     assistant_created_at: String,
     cancelled: bool,
     token_usage: Option<TokenUsage>,
+    event_scope: &str,
+    request_id: Option<&String>,
 ) {
     let _ = app.emit(
         "chat:done",
@@ -181,6 +204,8 @@ fn emit_done(
             chat_id: prompt.chat_id,
             assistant_created_at,
             cancelled,
+            event_scope: event_scope.to_string(),
+            request_id: request_id.cloned(),
             prompt_tokens: token_usage.as_ref().and_then(|usage| usage.prompt_tokens),
             completion_tokens: token_usage.as_ref().and_then(|usage| usage.completion_tokens),
             total_tokens: token_usage.as_ref().and_then(|usage| usage.total_tokens),
@@ -201,6 +226,8 @@ fn finalize_reply(
     assistant_created_at: String,
     cancelled: bool,
     token_usage: Option<TokenUsage>,
+    event_scope: &str,
+    request_id: Option<&String>,
 ) -> Result<(), String> {
     if !final_reply.is_empty() {
         let (user_message_id, assistant_message_id) = tavern::append_exchange(
@@ -211,22 +238,24 @@ fn finalize_reply(
             user_created_at.as_deref(),
             &assistant_created_at,
         )?;
-        let memory_app = app.clone();
-        let memory_client = state.client.clone();
-        let memory_prompt = prompt.clone();
-        let memory_user_message = user_message.clone();
-        let memory_reply = final_reply.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ = tavern::extract_memory_cards_after_exchange(
-                memory_app,
-                memory_client,
-                memory_prompt,
-                memory_user_message,
-                memory_reply,
-                vec![user_message_id, assistant_message_id],
-            )
-            .await;
-        });
+        if event_scope != "story-mode" {
+            let memory_app = app.clone();
+            let memory_client = state.client.clone();
+            let memory_prompt = prompt.clone();
+            let memory_user_message = user_message.clone();
+            let memory_reply = final_reply.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = tavern::extract_memory_cards_after_exchange(
+                    memory_app,
+                    memory_client,
+                    memory_prompt,
+                    memory_user_message,
+                    memory_reply,
+                    vec![user_message_id, assistant_message_id],
+                )
+                .await;
+            });
+        }
         let score_app = app.clone();
         let score_client = state.client.clone();
         let score_prompt = prompt.clone();
@@ -280,7 +309,16 @@ fn finalize_reply(
         });
     }
 
-    emit_done(app, prompt, final_reply, assistant_created_at, cancelled, token_usage);
+    emit_done(
+        app,
+        prompt,
+        final_reply,
+        assistant_created_at,
+        cancelled,
+        token_usage,
+        event_scope,
+        request_id,
+    );
     Ok(())
 }
 
@@ -364,22 +402,37 @@ pub async fn send_message(
     provider_id: Option<String>,
     client_now: Option<String>,
     user_created_at: Option<String>,
+    event_scope: Option<String>,
+    request_id: Option<String>,
 ) -> Result<(), String> {
+    let event_scope = normalized_event_scope(event_scope);
     let user_message = message.trim().to_string();
     if user_message.is_empty() {
         return Err("请输入想和鲸灵说的话。".to_string());
     }
 
-    let prompt = tavern::build_prompt_for_chat(
-        &app,
-        &user_message,
-        chat_id,
-        character_id,
-        preset_id,
-        provider_id,
-        model.clone(),
-        client_now,
-    )?;
+    let prompt = if event_scope == "story-mode" {
+        tavern::build_prompt_for_story_mode(
+            &app,
+            &user_message,
+            chat_id,
+            character_id,
+            provider_id,
+            model.clone(),
+            client_now,
+        )?
+    } else {
+        tavern::build_prompt_for_chat(
+            &app,
+            &user_message,
+            chat_id,
+            character_id,
+            preset_id,
+            provider_id,
+            model.clone(),
+            client_now,
+        )?
+    };
     let provider = tavern::provider_by_id(Some(&app), Some(&prompt.provider_id))?;
     if provider.provider_type == crate::web_bridge::WEB_BRIDGE_PROVIDER_TYPE {
         if !crate::web_bridge::qa_features_enabled() {
@@ -409,20 +462,22 @@ pub async fn send_message(
         let job = match job_result {
             Ok(job) => job,
             Err(message) => {
-                emit_error(&app, &message);
+                emit_error(&app, &message, &event_scope, request_id.as_ref());
                 return Err(message);
             }
         };
         let final_reply = tavern::compact_reply(&job.answer_text, prompt.reply_limit);
         if final_reply.is_empty() {
             let message = "DeepSeek 网页桥没有回传可用回复。".to_string();
-            emit_error(&app, &message);
+            emit_error(&app, &message, &event_scope, request_id.as_ref());
             return Err(message);
         }
         let _ = app.emit(
             "chat:chunk",
             ChatChunkPayload {
                 content: final_reply.clone(),
+                event_scope: event_scope.clone(),
+                request_id: request_id.clone(),
             },
         );
         let assistant_created_at = tavern::now_stamp_public();
@@ -436,6 +491,8 @@ pub async fn send_message(
             assistant_created_at,
             false,
             None,
+            &event_scope,
+            request_id.as_ref(),
         );
     }
     let api_key = tavern::read_provider_api_key(&provider.id)?;
@@ -495,7 +552,7 @@ pub async fn send_message(
         let status = response.status();
         let text = response.text().await.unwrap_or_else(|_| "无法读取错误详情".to_string());
         let message = format!("{} 返回 {status}: {text}", provider.name);
-        emit_error(&app, &message);
+        emit_error(&app, &message, &event_scope, request_id.as_ref());
         return Err(message);
     }
 
@@ -537,7 +594,14 @@ pub async fn send_message(
                         for choice in parsed.choices {
                             if let Some(content) = choice.delta.and_then(|delta| delta.content) {
                                 assistant_reply.push_str(&content);
-                                let _ = app.emit("chat:chunk", ChatChunkPayload { content });
+                                let _ = app.emit(
+                                    "chat:chunk",
+                                    ChatChunkPayload {
+                                        content,
+                                        event_scope: event_scope.clone(),
+                                        request_id: request_id.clone(),
+                                    },
+                                );
                             }
                         }
                     }
@@ -563,6 +627,8 @@ pub async fn send_message(
         assistant_created_at,
         cancelled,
         token_usage,
+        &event_scope,
+        request_id.as_ref(),
     )
 }
 

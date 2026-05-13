@@ -9,6 +9,13 @@ export function avatarImageSrc(avatar?: string | null) {
   return isTauri() ? convertFileSrc(value) : value
 }
 
+export function localMediaSrc(path?: string | null) {
+  const value = path?.trim()
+  if (!value) return ''
+  if (passthroughSrc.test(value)) return value
+  return isTauri() ? convertFileSrc(value) : value
+}
+
 export function avatarFallbackText(name?: string | null) {
   const value = name?.trim()
   if (!value) return '?'

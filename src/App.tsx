@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react'
 import './App.css'
 import { ChatWindow } from './components/ChatWindow'
+import { FreeModeWindow } from './components/FreeModeWindow'
 import { PetWindow } from './components/PetWindow'
+import { StoryModeWindow } from './components/StoryModeWindow'
 import { TavernWindow } from './components/TavernWindow'
 import { getWindowLabel, runningInTauri } from './lib/tauri'
 import { MobileApp } from './mobile/MobileApp'
 
-type DesktopWindowLabel = 'pet' | 'chat' | 'tavern'
+type DesktopWindowLabel = 'pet' | 'chat' | 'tavern' | 'free-mode' | 'story-mode'
 type AppView = DesktopWindowLabel | 'mobile'
 
 function isDesktopWindowLabel(label: string | null | undefined): label is DesktopWindowLabel {
-  return label === 'pet' || label === 'chat' || label === 'tavern'
+  return label === 'pet' || label === 'chat' || label === 'tavern' || label === 'free-mode' || label === 'story-mode'
 }
 
 function shouldUseMobilePreview(params: URLSearchParams) {
@@ -22,11 +24,11 @@ function readPreviewAppView(): AppView {
   if (shouldUseMobilePreview(params)) return 'mobile'
 
   const view = params.get('view')
-  return view === 'pet' || view === 'tavern' ? view : 'chat'
+  return isDesktopWindowLabel(view) ? view : 'chat'
 }
 
 function normalizeWindowLabel(label: string | null | undefined): DesktopWindowLabel {
-  return label === 'pet' || label === 'tavern' ? label : 'chat'
+  return isDesktopWindowLabel(label) ? label : 'chat'
 }
 
 function isAndroidRuntime() {
@@ -90,6 +92,10 @@ function App() {
         <PetWindow />
       ) : appView === 'tavern' ? (
         <TavernWindow />
+      ) : appView === 'free-mode' ? (
+        <FreeModeWindow />
+      ) : appView === 'story-mode' ? (
+        <StoryModeWindow />
       ) : (
         <ChatWindow />
       )}

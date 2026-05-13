@@ -15,15 +15,18 @@ use deepseek::{
 #[cfg(not(mobile))]
 use piper::{piper_status, synthesize_piper_command};
 use settings::{
-    clear_memory_command, get_settings, has_api_key, hide_chat_window, hide_tavern_window,
-    save_api_key, set_always_on_top, set_pet_scale, show_chat_window, show_tavern_window,
-    speak_text_command, toggle_autostart, toggle_chat_window, toggle_tavern_window,
+    clear_memory_command, get_active_window_context, get_settings, has_api_key, hide_chat_window,
+    hide_free_mode_window, hide_story_mode_window, hide_tavern_window, open_browser_search,
+    save_api_key, set_always_on_top, set_pet_scale, show_chat_window, show_free_mode_window,
+    show_story_mode_window, show_tavern_window, speak_text_command, toggle_autostart,
+    toggle_chat_window, toggle_free_mode_window, toggle_story_mode_window, toggle_tavern_window,
     update_settings, TtsPreviewState,
 };
 use tavern::{
     bookmark_message, clear_chat_messages, create_chat, delete_chat_command, export_character_card,
     export_chat, export_persona, export_preset, export_worldbook, import_character_card,
     get_relationship, get_relationship_preferences, import_avatar_image, import_chat, import_persona,
+    import_stage_asset,
     import_preset, import_worldbook, install_builtin_assets, list_builtin_assets, list_characters,
     list_chats, list_personas, list_presets, list_providers, list_relationships, list_memory_cards,
     list_worldbooks, load_chat_command,
@@ -91,6 +94,15 @@ fn setup_desktop(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
         let _ = tavern.set_always_on_top(true);
         let _ = tavern.hide();
     }
+    if let Some(free_mode) = app.get_webview_window("free-mode") {
+        let _ = free_mode.set_always_on_top(true);
+        let _ = free_mode.set_skip_taskbar(true);
+        let _ = free_mode.hide();
+    }
+    if let Some(story_mode) = app.get_webview_window("story-mode") {
+        let _ = story_mode.set_always_on_top(true);
+        let _ = story_mode.hide();
+    }
     Ok(())
 }
 
@@ -142,6 +154,14 @@ pub fn run() {
         show_tavern_window,
         hide_tavern_window,
         toggle_tavern_window,
+        show_free_mode_window,
+        hide_free_mode_window,
+        toggle_free_mode_window,
+        show_story_mode_window,
+        hide_story_mode_window,
+        toggle_story_mode_window,
+        get_active_window_context,
+        open_browser_search,
         piper_status,
         synthesize_piper_command,
         speak_text_command,
@@ -161,6 +181,7 @@ pub fn run() {
         list_characters,
         save_character,
         import_avatar_image,
+        import_stage_asset,
         import_character_card,
         export_character_card,
         list_personas,
@@ -217,6 +238,14 @@ pub fn run() {
             show_tavern_window,
             hide_tavern_window,
             toggle_tavern_window,
+            show_free_mode_window,
+            hide_free_mode_window,
+            toggle_free_mode_window,
+            show_story_mode_window,
+            hide_story_mode_window,
+            toggle_story_mode_window,
+            get_active_window_context,
+            open_browser_search,
             speak_text_command,
             clear_memory_command,
             get_relationship,
@@ -234,6 +263,7 @@ pub fn run() {
             list_characters,
             save_character,
             import_avatar_image,
+            import_stage_asset,
             import_character_card,
             export_character_card,
             list_personas,

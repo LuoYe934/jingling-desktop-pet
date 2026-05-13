@@ -51,6 +51,8 @@ struct TavernPaths {
     relationships: PathBuf,
     memory_cards: PathBuf,
     avatars: PathBuf,
+    stage_asset_images: PathBuf,
+    stage_asset_audio: PathBuf,
     providers: PathBuf,
 }
 
@@ -88,6 +90,70 @@ impl Default for RelationshipStagePrompts {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
+pub struct StageSprite {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StageExpression {
+    pub id: String,
+    pub name: String,
+    pub sprite_id: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StageScene {
+    pub id: String,
+    pub name: String,
+    pub background: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StageBgm {
+    pub id: String,
+    pub name: String,
+    pub audio: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CharacterStageConfig {
+    pub enabled: bool,
+    pub sprites: Vec<StageSprite>,
+    pub expressions: Vec<StageExpression>,
+    pub scenes: Vec<StageScene>,
+    pub bgms: Vec<StageBgm>,
+    pub default_scene_id: Option<String>,
+    pub default_expression_id: Option<String>,
+    pub output_format: String,
+}
+
+impl Default for CharacterStageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sprites: Vec::new(),
+            expressions: Vec::new(),
+            scenes: Vec::new(),
+            bgms: Vec::new(),
+            default_scene_id: None,
+            default_expression_id: None,
+            output_format: "multiFrameJson".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct TavernCharacter {
     pub id: String,
     pub name: String,
@@ -104,6 +170,7 @@ pub struct TavernCharacter {
     pub default_provider_id: Option<String>,
     pub use_custom_relationship_prompts: bool,
     pub relationship_stage_prompts: RelationshipStagePrompts,
+    pub stage_config: CharacterStageConfig,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -827,6 +894,8 @@ fn tavern_paths(app: &AppHandle) -> Result<TavernPaths, String> {
         relationships: root.join("relationships"),
         memory_cards: root.join("memory_cards.json"),
         avatars: root.join("avatars"),
+        stage_asset_images: root.join("stage_assets").join("images"),
+        stage_asset_audio: root.join("stage_assets").join("audio"),
         providers: root.join("providers.json"),
         root,
     };
@@ -839,6 +908,8 @@ fn tavern_paths(app: &AppHandle) -> Result<TavernPaths, String> {
         &paths.presets,
         &paths.relationships,
         &paths.avatars,
+        &paths.stage_asset_images,
+        &paths.stage_asset_audio,
     ] {
         fs::create_dir_all(dir).map_err(|err| format!("无法创建酒馆数据目录: {err}"))?;
     }
@@ -935,6 +1006,143 @@ fn copy_avatar_image(app: &AppHandle, source: &Path) -> Result<PathBuf, String> 
     let target = paths.avatars.join(format!("{}-{}.{}", now_stamp(), stem, extension));
     fs::copy(source, &target)
         .map_err(|err| format!("无法复制头像到应用数据目录 {}: {err}", target.display()))?;
+    Ok(target)
+}
+
+fn normalize_stage_asset_id(value: &str, fallback: &str) -> String {
+    sanitize_id(value, fallback)
+}
+
+fn normalize_stage_config(config: &mut CharacterStageConfig) {
+    config.output_format = if config.output_format.trim().is_empty() {
+        "multiFrameJson".to_string()
+    } else {
+        config.output_format.trim().to_string()
+    };
+    for sprite in &mut config.sprites {
+        if sprite.id.trim().is_empty() {
+            sprite.id = new_id("sprite", &sprite.name);
+        } else {
+            sprite.id = normalize_stage_asset_id(&sprite.id, "sprite");
+        }
+        if sprite.name.trim().is_empty() {
+            sprite.name = sprite.id.clone();
+        } else {
+            sprite.name = sprite.name.trim().to_string();
+        }
+        sprite.image = sprite.image.trim().to_string();
+        sprite.description = sprite.description.trim().to_string();
+    }
+    for expression in &mut config.expressions {
+        if expression.id.trim().is_empty() {
+            expression.id = new_id("expression", &expression.name);
+        } else {
+            expression.id = normalize_stage_asset_id(&expression.id, "expression");
+        }
+        if expression.name.trim().is_empty() {
+            expression.name = expression.id.clone();
+        } else {
+            expression.name = expression.name.trim().to_string();
+        }
+        expression.sprite_id = expression.sprite_id.trim().to_string();
+        expression.prompt = expression.prompt.trim().to_string();
+    }
+    for scene in &mut config.scenes {
+        if scene.id.trim().is_empty() {
+            scene.id = new_id("scene", &scene.name);
+        } else {
+            scene.id = normalize_stage_asset_id(&scene.id, "scene");
+        }
+        if scene.name.trim().is_empty() {
+            scene.name = scene.id.clone();
+        } else {
+            scene.name = scene.name.trim().to_string();
+        }
+        scene.background = scene.background.trim().to_string();
+        scene.prompt = scene.prompt.trim().to_string();
+    }
+    for bgm in &mut config.bgms {
+        if bgm.id.trim().is_empty() {
+            bgm.id = new_id("bgm", &bgm.name);
+        } else {
+            bgm.id = normalize_stage_asset_id(&bgm.id, "bgm");
+        }
+        if bgm.name.trim().is_empty() {
+            bgm.name = bgm.id.clone();
+        } else {
+            bgm.name = bgm.name.trim().to_string();
+        }
+        bgm.audio = bgm.audio.trim().to_string();
+        bgm.prompt = bgm.prompt.trim().to_string();
+    }
+    let scene_ids = config
+        .scenes
+        .iter()
+        .map(|scene| scene.id.as_str())
+        .collect::<HashSet<_>>();
+    if !config
+        .default_scene_id
+        .as_deref()
+        .map(|id| scene_ids.contains(id))
+        .unwrap_or(false)
+    {
+        config.default_scene_id = config.scenes.first().map(|scene| scene.id.clone());
+    }
+    let expression_ids = config
+        .expressions
+        .iter()
+        .map(|expression| expression.id.as_str())
+        .collect::<HashSet<_>>();
+    if !config
+        .default_expression_id
+        .as_deref()
+        .map(|id| expression_ids.contains(id))
+        .unwrap_or(false)
+    {
+        config.default_expression_id = config.expressions.first().map(|expression| expression.id.clone());
+    }
+}
+
+fn copy_stage_asset(app: &AppHandle, source: &Path, kind: &str) -> Result<PathBuf, String> {
+    let paths = tavern_paths(app)?;
+    if !source.is_file() {
+        return Err(format!("舞台资源文件不存在: {}", source.display()));
+    }
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .ok_or_else(|| "舞台资源文件缺少扩展名".to_string())?;
+    let target_dir = match kind {
+        "image" => {
+            if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") {
+                return Err("演出图片只支持 png、jpg、jpeg、webp、gif".to_string());
+            }
+            paths.stage_asset_images
+        }
+        "audio" => {
+            if !matches!(extension.as_str(), "mp3" | "wav" | "ogg" | "m4a" | "flac") {
+                return Err("演出音频只支持 mp3、wav、ogg、m4a、flac".to_string());
+            }
+            paths.stage_asset_audio
+        }
+        _ => return Err("未知舞台资源类型，请使用 image 或 audio".to_string()),
+    };
+    let target_dir_canonical = target_dir.canonicalize().unwrap_or(target_dir.clone());
+    let source_canonical = source
+        .canonicalize()
+        .map_err(|err| format!("无法读取舞台资源路径: {err}"))?;
+    if source_canonical.starts_with(&target_dir_canonical) {
+        return Ok(source_canonical);
+    }
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(|value| sanitize_id(value, "stage-asset"))
+        .unwrap_or_else(|| "stage-asset".to_string());
+    let target = target_dir.join(format!("{}-{}.{}", now_stamp(), stem, extension));
+    fs::copy(source, &target)
+        .map_err(|err| format!("无法复制舞台资源到 {}: {err}", target.display()))?;
     Ok(target)
 }
 
@@ -2976,6 +3184,7 @@ fn default_character() -> TavernCharacter {
         default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
         use_custom_relationship_prompts: false,
         relationship_stage_prompts: default_relationship_stage_prompts(),
+        stage_config: CharacterStageConfig::default(),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -3008,6 +3217,25 @@ fn default_preset() -> PromptPreset {
         max_output_tokens: 220,
         temperature: 0.8,
         reply_limit: 100,
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+fn qa_visual_novel_stage_preset() -> PromptPreset {
+    let now = now_stamp();
+    PromptPreset {
+        id: "qa-preset-visual-novel-stage".to_string(),
+        name: "视觉小说演出模板 QA".to_string(),
+        enabled: true,
+        system_prompt: "你是{{char}}，正在参与剧情/场景模式。保持角色一致，用中文推进场景，输出格式由后端剧情模式规则约束。".to_string(),
+        instruct_template: "只输出剧情模式要求的 JSON 对象；不要输出 Markdown、解释或代码围栏；台词自然，画面推进清楚。".to_string(),
+        author_note: "QA 专用预设：供剧情模式窗口使用，要求模型输出多帧视觉小说 JSON。".to_string(),
+        context_messages: 36,
+        max_input_chars: 16000,
+        max_output_tokens: 1000,
+        temperature: 0.85,
+        reply_limit: 2000,
         created_at: now.clone(),
         updated_at: now,
     }
@@ -3316,6 +3544,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3334,6 +3563,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3352,6 +3582,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3370,6 +3601,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3388,6 +3620,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3406,6 +3639,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3424,6 +3658,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3442,6 +3677,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3460,6 +3696,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3478,6 +3715,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3496,6 +3734,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3514,6 +3753,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3532,6 +3772,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3550,6 +3791,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3568,6 +3810,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3586,6 +3829,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3604,6 +3848,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3622,6 +3867,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3640,6 +3886,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3658,6 +3905,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3676,6 +3924,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3694,6 +3943,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3712,6 +3962,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3730,6 +3981,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3748,6 +4000,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3766,6 +4019,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now.clone(),
         },
@@ -3784,6 +4038,7 @@ fn builtin_characters() -> Vec<TavernCharacter> {
             default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
             use_custom_relationship_prompts: false,
             relationship_stage_prompts: default_relationship_stage_prompts(),
+            stage_config: CharacterStageConfig::default(),
             created_at: now.clone(),
             updated_at: now,
         },
@@ -5051,6 +5306,7 @@ fn character_from_value(value: Value) -> TavernCharacter {
         default_provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
         use_custom_relationship_prompts: false,
         relationship_stage_prompts: default_relationship_stage_prompts(),
+        stage_config: CharacterStageConfig::default(),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -5082,6 +5338,7 @@ fn normalize_character(mut character: TavernCharacter) -> TavernCharacter {
     if character.created_at.trim().is_empty() {
         character.created_at = now.clone();
     }
+    normalize_stage_config(&mut character.stage_config);
     character.updated_at = now;
     character
 }
@@ -5276,6 +5533,10 @@ fn stable_prompt_parts(
     if !preset.instruct_template.trim().is_empty() {
         parts.push(format!("输出规则:\n{}", replace_vars(&preset.instruct_template, character, persona, preset)));
     }
+    parts.push(format!(
+        "回复长度规则:\n回复字数上限是 {} 字，不需要写满；请在上限内自然完整地收尾，不要用 ... 或省略号表示未写完。",
+        preset.reply_limit
+    ));
     parts
 }
 
@@ -5304,8 +5565,55 @@ pub fn compact_reply(reply: &str, limit: usize) -> String {
     if trimmed.chars().count() <= normalized {
         return trimmed.to_string();
     }
-    let take = normalized.saturating_sub(3);
-    trimmed.chars().take(take).collect::<String>() + "..."
+    graceful_reply_prefix(trimmed, normalized)
+}
+
+fn graceful_reply_prefix(text: &str, limit: usize) -> String {
+    let cutoff = byte_index_after_chars(text, limit);
+    let prefix = &text[..cutoff];
+    if let Some(boundary) = natural_reply_boundary(prefix, limit) {
+        return prefix[..boundary].trim_end().to_string();
+    }
+    prefix.trim_end().to_string()
+}
+
+fn byte_index_after_chars(text: &str, limit: usize) -> usize {
+    text.char_indices()
+        .nth(limit)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len())
+}
+
+fn natural_reply_boundary(prefix: &str, limit: usize) -> Option<usize> {
+    let minimum = limit.saturating_mul(3) / 5;
+    let mut count = 0usize;
+    let mut boundary = None;
+    for (index, ch) in prefix.char_indices() {
+        count += 1;
+        if count >= minimum && is_sentence_terminal(ch) {
+            boundary = Some(index + ch.len_utf8());
+        }
+    }
+    boundary.map(|mut index| {
+        while let Some(ch) = prefix[index..].chars().next() {
+            if !is_closing_punctuation(ch) {
+                break;
+            }
+            index += ch.len_utf8();
+        }
+        index
+    })
+}
+
+fn is_sentence_terminal(ch: char) -> bool {
+    matches!(ch, '。' | '！' | '？' | '!' | '?' | ';' | '；')
+}
+
+fn is_closing_punctuation(ch: char) -> bool {
+    matches!(
+        ch,
+        '"' | '\'' | ')' | ']' | '}' | '”' | '’' | '）' | '】' | '》' | '〉' | '」' | '』'
+    )
 }
 
 fn limit_text(text: &str, limit: usize) -> String {
@@ -5535,6 +5843,147 @@ pub fn build_prompt_for_chat(
         messages,
         matched_worldbook_entries: matched,
     })
+}
+
+fn stage_asset_prompt(config: &CharacterStageConfig) -> String {
+    let mut parts = Vec::new();
+    if !config.sprites.is_empty() {
+        let sprites = config
+            .sprites
+            .iter()
+            .map(|sprite| {
+                format!(
+                    "- {} | {} | {}",
+                    sprite.id,
+                    sprite.name,
+                    limit_text(&sprite.description, 120)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("可用立绘 sprites:\n{sprites}"));
+    }
+    if !config.expressions.is_empty() {
+        let expressions = config
+            .expressions
+            .iter()
+            .map(|expression| {
+                format!(
+                    "- {} | {} | spriteId={} | {}",
+                    expression.id,
+                    expression.name,
+                    expression.sprite_id,
+                    limit_text(&expression.prompt, 120)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("可用表情 expressions:\n{expressions}"));
+    }
+    if !config.scenes.is_empty() {
+        let scenes = config
+            .scenes
+            .iter()
+            .map(|scene| format!("- {} | {} | {}", scene.id, scene.name, limit_text(&scene.prompt, 120)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("可用场景 scenes:\n{scenes}"));
+    }
+    if !config.bgms.is_empty() {
+        let bgms = config
+            .bgms
+            .iter()
+            .map(|bgm| format!("- {} | {} | {}", bgm.id, bgm.name, limit_text(&bgm.prompt, 120)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("可用 BGM bgms:\n{bgms}"));
+    }
+    if let Some(scene_id) = config.default_scene_id.as_deref().filter(|value| !value.trim().is_empty()) {
+        parts.push(format!("默认场景 defaultSceneId: {scene_id}"));
+    }
+    if let Some(expression_id) = config
+        .default_expression_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(format!("默认表情 defaultExpressionId: {expression_id}"));
+    }
+    if parts.is_empty() {
+        "当前角色未配置演出资源。spriteId、expressionId、sceneId、bgmId 可以留空，前端会回退到角色头像和默认舞台。".to_string()
+    } else {
+        parts.join("\n\n")
+    }
+}
+
+fn story_mode_prompt_rules(character: &TavernCharacter) -> String {
+    let mut config = character.stage_config.clone();
+    normalize_stage_config(&mut config);
+    let assets = if config.enabled {
+        stage_asset_prompt(&config)
+    } else {
+        "当前角色未启用演出配置。spriteId、expressionId、sceneId、bgmId 可以留空，前端会回退到角色头像和默认舞台。".to_string()
+    };
+    format!(
+        r#"剧情模式 QA 输出规则:
+你正在驱动一个视觉小说/场景演出窗口。请只输出一个 JSON 对象，不要输出 Markdown、代码围栏、解释、前后缀或额外文本。
+JSON 结构固定为:
+{{
+  "frames": [
+    {{
+      "speaker": "角色名或旁白",
+      "text": "台词或旁白",
+      "spriteId": "立绘ID",
+      "expressionId": "表情ID",
+      "sceneId": "场景ID",
+      "bgmId": "BGM ID",
+      "mood": "状态"
+    }}
+  ],
+  "choices": [
+    {{ "label": "选项文字", "prompt": "玩家选择后的输入" }}
+  ]
+}}
+要求:
+- frames 必须是 1 到 4 帧，每帧 text 适合直接显示在对话框里。
+- 可以用旁白推进画面，但不要替玩家决定重大选择。
+- choices 可为空；需要玩家选择时给 2 到 4 个简短选项。
+- spriteId、expressionId、sceneId、bgmId 只能使用下方列出的 ID；没有合适资源时填空字符串。
+- 继续遵守角色设定、Persona、世界书、长期摘要、记忆隔离和好感度关系。
+
+演出资源:
+{assets}"#
+    )
+}
+
+pub fn build_prompt_for_story_mode(
+    app: &AppHandle,
+    user_input: &str,
+    chat_id: Option<String>,
+    character_id: Option<String>,
+    provider_id: Option<String>,
+    model: Option<String>,
+    client_now: Option<String>,
+) -> Result<PromptBuildResult, String> {
+    let mut prompt = build_prompt_for_chat(
+        app,
+        user_input,
+        chat_id,
+        character_id.clone(),
+        Some("qa-preset-visual-novel-stage".to_string()),
+        provider_id,
+        model,
+        client_now,
+    )?;
+    let character = load_character(app, Some(&prompt.character_id))?;
+    let story_rules = ChatMessage {
+        role: "system".to_string(),
+        content: story_mode_prompt_rules(&character),
+    };
+    prompt.stable_prefix_tokens += estimate_message_tokens(&story_rules);
+    prompt.messages.insert(1, story_rules);
+    prompt.estimated_chars = estimate_prompt_tokens(&prompt.messages);
+    prompt.prompt_layout_version = "story-mode-qa-v1".to_string();
+    Ok(prompt)
 }
 
 pub fn append_exchange(
@@ -6233,6 +6682,15 @@ pub fn import_avatar_image(app: AppHandle, path: String) -> Result<String, Strin
 }
 
 #[tauri::command]
+pub fn import_stage_asset(app: AppHandle, path: String, kind: String) -> Result<String, String> {
+    if !crate::web_bridge::qa_features_enabled() {
+        return Err("演出资源导入仅在 QA 构建中可用".to_string());
+    }
+    let source = import_source_path(&path, "演出资源")?;
+    Ok(copy_stage_asset(&app, &source, kind.trim())?.display().to_string())
+}
+
+#[tauri::command]
 pub fn import_persona(app: AppHandle, path: String) -> Result<Persona, String> {
     let source = import_source_path(&path, "Persona")?;
     let persona = normalize_persona(read_json::<Persona>(&source)?);
@@ -6452,6 +6910,11 @@ pub fn list_presets(app: AppHandle) -> Result<Vec<PromptPreset>, String> {
     ensure_seed_data(&app)?;
     let paths = tavern_paths(&app)?;
     let mut items = list_json::<PromptPreset>(&paths.presets)?;
+    if crate::web_bridge::qa_features_enabled()
+        && !items.iter().any(|preset| preset.id == "qa-preset-visual-novel-stage")
+    {
+        items.push(qa_visual_novel_stage_preset());
+    }
     items.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(items)
 }
@@ -6728,6 +7191,15 @@ mod tests {
         assert_eq!(first, second);
         assert!(first.contains("角色卡"));
         assert!(!first.contains("当前本地时间"));
+    }
+
+    #[test]
+    fn compact_reply_uses_sentence_boundary_without_ellipsis() {
+        let reply = "第一句很完整。第二句也很完整。第三句会被截到一半但不应该补省略号";
+        let compacted = compact_reply(reply, 18);
+
+        assert_eq!(compacted, "第一句很完整。第二句也很完整。");
+        assert!(!compacted.ends_with("..."));
     }
 
     #[test]

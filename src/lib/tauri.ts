@@ -19,6 +19,7 @@ import type {
   MemoryCard,
   MemoryChangedPayload,
   MemoryExtractionSummary,
+  ModeChatScope,
   Persona,
   PiperStatus,
   PiperSynthesisResult,
@@ -41,7 +42,7 @@ import type {
 
 export const runningInTauri = () => isTauri()
 
-function setPreviewView(view: 'pet' | 'chat' | 'tavern') {
+function setPreviewView(view: 'pet' | 'chat' | 'tavern' | 'free-mode' | 'story-mode') {
   const params = new URLSearchParams(window.location.search)
   params.set('view', view)
   window.history.pushState(null, '', `?${params.toString()}`)
@@ -110,6 +111,79 @@ export async function toggleTavernWindow() {
   await invoke('toggle_tavern_window')
 }
 
+export async function showFreeModeWindow() {
+  if (!runningInTauri()) {
+    setPreviewView('free-mode')
+    return
+  }
+  await invoke('show_free_mode_window')
+}
+
+export async function hideFreeModeWindow() {
+  if (!runningInTauri()) {
+    setPreviewView('pet')
+    return
+  }
+  await invoke('hide_free_mode_window')
+}
+
+export async function toggleFreeModeWindow() {
+  if (!runningInTauri()) {
+    const current = new URLSearchParams(window.location.search).get('view') ?? 'chat'
+    setPreviewView(current === 'free-mode' ? 'pet' : 'free-mode')
+    return
+  }
+  await invoke('toggle_free_mode_window')
+}
+
+export async function showStoryModeWindow() {
+  if (!runningInTauri()) {
+    setPreviewView('story-mode')
+    return
+  }
+  await invoke('show_story_mode_window')
+}
+
+export async function hideStoryModeWindow() {
+  if (!runningInTauri()) {
+    setPreviewView('pet')
+    return
+  }
+  await invoke('hide_story_mode_window')
+}
+
+export async function toggleStoryModeWindow() {
+  if (!runningInTauri()) {
+    const current = new URLSearchParams(window.location.search).get('view') ?? 'chat'
+    setPreviewView(current === 'story-mode' ? 'pet' : 'story-mode')
+    return
+  }
+  await invoke('toggle_story_mode_window')
+}
+
+export interface ActiveWindowContext {
+  title: string
+  processName: string
+}
+
+export async function getActiveWindowContext() {
+  if (!runningInTauri()) {
+    return {
+      title: document.title || 'Browser preview',
+      processName: 'browser',
+    } satisfies ActiveWindowContext
+  }
+  return invoke<ActiveWindowContext>('get_active_window_context')
+}
+
+export async function openBrowserSearch(query: string) {
+  if (!runningInTauri()) {
+    window.open(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer')
+    return
+  }
+  await invoke('open_browser_search', { query })
+}
+
 export async function focusPetWindow() {
   if (!runningInTauri()) {
     setPreviewView('pet')
@@ -128,11 +202,13 @@ export interface SendMessageOptions {
   providerId?: string
   clientNow?: string
   userCreatedAt?: string
+  eventScope?: ModeChatScope
+  requestId?: string
 }
 
 export async function sendMessage(message: string, options: SendMessageOptions = {}) {
   if (!runningInTauri()) {
-    return mockStream()
+    return mockStream(message, options)
   }
   await invoke('send_message', {
     message,
@@ -143,6 +219,8 @@ export async function sendMessage(message: string, options: SendMessageOptions =
     providerId: options.providerId,
     clientNow: options.clientNow,
     userCreatedAt: options.userCreatedAt,
+    eventScope: options.eventScope,
+    requestId: options.requestId,
   })
 }
 
@@ -246,6 +324,47 @@ export async function pickAvatarFile() {
   return invoke<string>('import_avatar_image', { path: selected })
 }
 
+export async function pickStageImageFile() {
+  if (!runningInTauri()) return pickBrowserImageFile()
+  const selected = await open({
+    multiple: false,
+    filters: [
+      {
+        name: 'Stage image',
+        extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'],
+      },
+    ],
+  })
+  if (typeof selected !== 'string') return null
+  return invoke<string>('import_stage_asset', { path: selected, kind: 'image' })
+}
+
+export async function pickStageAudioFile() {
+  if (!runningInTauri()) {
+    return new Promise<string | null>((resolve) => {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.accept = 'audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/flac'
+      input.onchange = () => {
+        const file = input.files?.[0]
+        resolve(file ? URL.createObjectURL(file) : null)
+      }
+      input.click()
+    })
+  }
+  const selected = await open({
+    multiple: false,
+    filters: [
+      {
+        name: 'Stage audio',
+        extensions: ['mp3', 'wav', 'ogg', 'm4a', 'flac'],
+      },
+    ],
+  })
+  if (typeof selected !== 'string') return null
+  return invoke<string>('import_stage_asset', { path: selected, kind: 'audio' })
+}
+
 export async function setAlwaysOnTop(enabled: boolean) {
   if (!runningInTauri()) return enabled
   return invoke<boolean>('set_always_on_top', { enabled })
@@ -309,7 +428,23 @@ export async function listenToChatEvents(handlers: {
   onCompactError?: (payload: ChatCompactErrorPayload) => void
 }) {
   if (!runningInTauri()) {
-    return () => {}
+    const chunk = (event: Event) => handlers.onChunk((event as CustomEvent<ChatChunkPayload>).detail)
+    const done = (event: Event) => handlers.onDone((event as CustomEvent<ChatDonePayload>).detail)
+    const error = (event: Event) => handlers.onError((event as CustomEvent<ChatErrorPayload>).detail)
+    const compacted = (event: Event) => handlers.onCompacted?.((event as CustomEvent<ChatCompactedPayload>).detail)
+    const compactError = (event: Event) => handlers.onCompactError?.((event as CustomEvent<ChatCompactErrorPayload>).detail)
+    window.addEventListener('chat:chunk', chunk)
+    window.addEventListener('chat:done', done)
+    window.addEventListener('chat:error', error)
+    window.addEventListener('chat:compacted', compacted)
+    window.addEventListener('chat:compact-error', compactError)
+    return () => {
+      window.removeEventListener('chat:chunk', chunk)
+      window.removeEventListener('chat:done', done)
+      window.removeEventListener('chat:error', error)
+      window.removeEventListener('chat:compacted', compacted)
+      window.removeEventListener('chat:compact-error', compactError)
+    }
   }
 
   const unlisteners: UnlistenFn[] = []
@@ -832,16 +967,93 @@ export async function importChat(path: string) {
 }
 
 let mockStreamAbortController: AbortController | null = null
+let mockStreamCurrent:
+  | {
+      eventScope: ModeChatScope
+      requestId?: string
+      chatId?: string
+    }
+  | null = null
 
-function cancelMockStream() {
-  mockStreamAbortController?.abort()
-  mockStreamAbortController = null
+function emitMockChatChunk(payload: ChatChunkPayload) {
+  window.dispatchEvent(new CustomEvent('chat:chunk', { detail: payload }))
 }
 
-async function mockStream() {
+function emitMockChatDone(payload: ChatDonePayload) {
+  window.dispatchEvent(new CustomEvent('chat:done', { detail: payload }))
+}
+
+function cancelMockStream() {
+  const current = mockStreamCurrent
+  mockStreamAbortController?.abort()
+  mockStreamAbortController = null
+  mockStreamCurrent = null
+  if (current) {
+    emitMockChatDone({
+      content: '',
+      chatId: current.chatId || 'mock-story-chat',
+      assistantCreatedAt: String(Date.now()),
+      cancelled: true,
+      eventScope: current.eventScope,
+      requestId: current.requestId,
+    })
+  }
+}
+
+function mockStoryModeReply(message: string, characterId?: string) {
+  const character = mockCharacters.find((item) => item.id === characterId) ?? mockCharacters[0]
+  const config = character.stageConfig ?? {
+    enabled: false,
+    sprites: [],
+    expressions: [],
+    scenes: [],
+    bgms: [],
+    defaultSceneId: null,
+    defaultExpressionId: null,
+    outputFormat: 'multiFrameJson',
+  }
+  const scene = config.scenes[0]
+  const sprite = config.sprites[0]
+  const expression = config.expressions[0]
+  const bgm = config.bgms[0]
+  const previewMessage = (message || '继续剧情').trim().replace(/[。！？!?.,，、；;：:]+$/u, '')
+  return JSON.stringify({
+    frames: [
+      {
+        speaker: character.name,
+        text: `预览已收到：${previewMessage}。这一帧会停顿片刻，然后给出下一段分支。`,
+        spriteId: sprite?.id || '',
+        expressionId: expression?.id || '',
+        sceneId: scene?.id || '',
+        bgmId: bgm?.id || '',
+        mood: '预览',
+      },
+      {
+        speaker: '旁白',
+        text: '浏览器预览正在使用本地 mock 多帧 JSON。QA 桌面版会由模型生成同样结构。',
+        spriteId: sprite?.id || '',
+        expressionId: expression?.id || '',
+        sceneId: scene?.id || '',
+        bgmId: bgm?.id || '',
+        mood: '分支',
+      },
+    ],
+    choices: [
+      { label: '靠近一点', prompt: '我靠近一点，观察角色的反应。' },
+      { label: '询问发生了什么', prompt: '我询问现在发生了什么。' },
+    ],
+  })
+}
+
+async function mockStream(message = '', options: SendMessageOptions = {}) {
   cancelMockStream()
   const controller = new AbortController()
   mockStreamAbortController = controller
+  mockStreamCurrent = {
+    eventScope: options.eventScope || 'chat',
+    requestId: options.requestId,
+    chatId: options.chatId,
+  }
   const cancelled = await new Promise<boolean>((resolve) => {
     const timeout = window.setTimeout(() => resolve(false), 300)
     controller.signal.addEventListener(
@@ -856,9 +1068,32 @@ async function mockStream() {
   if (mockStreamAbortController === controller) {
     mockStreamAbortController = null
   }
+  if (mockStreamCurrent?.requestId === options.requestId) {
+    mockStreamCurrent = null
+  }
   if (cancelled) return undefined
-  return '我先在预览模式陪你说话。接入 Tauri 后，就会换成 DeepSeek 的流式回复。呼噜。'
+  const eventScope = options.eventScope || 'chat'
+  const reply =
+    eventScope === 'story-mode'
+      ? mockStoryModeReply(message, options.characterId)
+      : 'Preview reply. In the Tauri build this will use the configured model stream.'
+  if (eventScope === 'story-mode') {
+    emitMockChatChunk({ content: reply, eventScope, requestId: options.requestId })
+    emitMockChatDone({
+      content: reply,
+      chatId: options.chatId || 'mock-story-chat',
+      assistantCreatedAt: String(Date.now()),
+      cancelled: false,
+      eventScope,
+      requestId: options.requestId,
+      promptTokens: 320,
+      completionTokens: 180,
+      totalTokens: 500,
+    })
+  }
+  return reply
 }
+
 
 function toChatListItem(chat: TavernChatSession): TavernChatListItem {
   const lastMessage = chat.messages.at(-1)?.content ?? ''
@@ -1101,6 +1336,16 @@ function mockSaveCharacter(character: TavernCharacter) {
     relationshipStagePrompts: {
       ...defaultRelationshipStagePrompts,
       ...character.relationshipStagePrompts,
+    },
+    stageConfig: {
+      enabled: Boolean(character.stageConfig?.enabled),
+      sprites: character.stageConfig?.sprites || [],
+      expressions: character.stageConfig?.expressions || [],
+      scenes: character.stageConfig?.scenes || [],
+      bgms: character.stageConfig?.bgms || [],
+      defaultSceneId: character.stageConfig?.defaultSceneId || null,
+      defaultExpressionId: character.stageConfig?.defaultExpressionId || null,
+      outputFormat: character.stageConfig?.outputFormat || 'multiFrameJson',
     },
     createdAt: character.createdAt || now,
     updatedAt: now,
@@ -2037,6 +2282,50 @@ const mockBuiltinCharacters: TavernCharacter[] = [
     defaultProviderId: 'deepseek',
     useCustomRelationshipPrompts: false,
     relationshipStagePrompts: defaultRelationshipStagePrompts,
+    stageConfig: {
+      enabled: true,
+      sprites: [
+        {
+          id: 'jingling-default',
+          name: '默认立绘',
+          image: '/assets/builtin-cards/risu-hot-nelly.png',
+          description: '预览用角色立绘',
+        },
+      ],
+      expressions: [
+        {
+          id: 'jingling-smile',
+          name: '微笑',
+          spriteId: 'jingling-default',
+          prompt: '温柔、安心、轻轻回应',
+        },
+        {
+          id: 'jingling-surprised',
+          name: '惊讶',
+          spriteId: 'jingling-default',
+          prompt: '短暂惊讶，但仍然保持亲近',
+        },
+      ],
+      scenes: [
+        {
+          id: 'desktop-night',
+          name: '夜晚桌面',
+          background: '',
+          prompt: '安静的夜晚桌面，屏幕微光，适合陪伴对话',
+        },
+      ],
+      bgms: [
+        {
+          id: 'quiet-loop',
+          name: '安静循环',
+          audio: '',
+          prompt: '轻柔、低存在感的陪伴氛围',
+        },
+      ],
+      defaultSceneId: 'desktop-night',
+      defaultExpressionId: 'jingling-smile',
+      outputFormat: 'multiFrameJson',
+    },
     createdAt: '0',
     updatedAt: '0',
   },
@@ -3575,6 +3864,50 @@ const mockCharacters: TavernCharacter[] = [
     defaultProviderId: 'deepseek',
     useCustomRelationshipPrompts: false,
     relationshipStagePrompts: defaultRelationshipStagePrompts,
+    stageConfig: {
+      enabled: true,
+      sprites: [
+        {
+          id: 'jingling-default',
+          name: '默认立绘',
+          image: '/assets/builtin-cards/risu-hot-nelly.png',
+          description: '预览用角色立绘',
+        },
+      ],
+      expressions: [
+        {
+          id: 'jingling-smile',
+          name: '微笑',
+          spriteId: 'jingling-default',
+          prompt: '温柔、安心、轻轻回应',
+        },
+        {
+          id: 'jingling-surprised',
+          name: '惊讶',
+          spriteId: 'jingling-default',
+          prompt: '短暂惊讶，但仍然保持亲近',
+        },
+      ],
+      scenes: [
+        {
+          id: 'desktop-night',
+          name: '夜晚桌面',
+          background: '',
+          prompt: '安静的夜晚桌面，屏幕微光，适合陪伴对话',
+        },
+      ],
+      bgms: [
+        {
+          id: 'quiet-loop',
+          name: '安静循环',
+          audio: '',
+          prompt: '柔和、低存在感的陪伴氛围',
+        },
+      ],
+      defaultSceneId: 'desktop-night',
+      defaultExpressionId: 'jingling-smile',
+      outputFormat: 'multiFrameJson',
+    },
     createdAt: '0',
     updatedAt: '0',
   },
