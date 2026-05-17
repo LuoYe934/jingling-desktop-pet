@@ -50,6 +50,22 @@ struct ChatRequest {
     max_completion_tokens: Option<u16>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ChatResponse {
+    #[serde(default)]
+    choices: Vec<ChatResponseChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatResponseChoice {
+    message: Option<ChatResponseMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatResponseMessage {
+    content: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct StreamOptions {
     include_usage: bool,
@@ -129,6 +145,44 @@ struct ChatCompactedPayload {
 struct ChatCompactErrorPayload {
     chat_id: String,
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FreeModeWatchEventParams {
+    pub character_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub model: Option<String>,
+    pub visual_context: String,
+    pub previous_summary: String,
+    pub event_summary: String,
+    pub recent_reaction_summary: String,
+    pub reason: String,
+    pub client_now: Option<String>,
+}
+
+impl Default for FreeModeWatchEventParams {
+    fn default() -> Self {
+        Self {
+            character_id: None,
+            provider_id: None,
+            model: None,
+            visual_context: String::new(),
+            previous_summary: String::new(),
+            event_summary: String::new(),
+            recent_reaction_summary: String::new(),
+            reason: String::new(),
+            client_now: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FreeModeWatchDecision {
+    pub should_respond: bool,
+    pub reason: String,
+    pub prompt: String,
 }
 
 fn credential_entry() -> Result<keyring::Entry, String> {
@@ -230,15 +284,21 @@ fn finalize_reply(
     request_id: Option<&String>,
 ) -> Result<(), String> {
     if !final_reply.is_empty() {
-        let (user_message_id, assistant_message_id) = tavern::append_exchange(
+        let scope = if event_scope == "free-mode" {
+            tavern::ChatSessionScope::FreeMode
+        } else {
+            tavern::ChatSessionScope::Normal
+        };
+        let (user_message_id, assistant_message_id) = tavern::append_exchange_in_scope(
             app,
             &prompt,
             &user_message,
             &final_reply,
             user_created_at.as_deref(),
             &assistant_created_at,
+            scope,
         )?;
-        if event_scope != "story-mode" {
+        if event_scope == "chat" {
             let memory_app = app.clone();
             let memory_client = state.client.clone();
             let memory_prompt = prompt.clone();
@@ -256,37 +316,39 @@ fn finalize_reply(
                 .await;
             });
         }
-        let score_app = app.clone();
-        let score_client = state.client.clone();
-        let score_prompt = prompt.clone();
-        let score_user_message = user_message.clone();
-        let score_reply = final_reply.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ = tavern::judge_relationship_after_exchange(
-                score_app,
-                score_client,
-                score_prompt,
-                score_user_message,
-                score_reply,
-            )
-            .await;
-        });
+        if event_scope == "chat" {
+            let score_app = app.clone();
+            let score_client = state.client.clone();
+            let score_prompt = prompt.clone();
+            let score_user_message = user_message.clone();
+            let score_reply = final_reply.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = tavern::judge_relationship_after_exchange(
+                    score_app,
+                    score_client,
+                    score_prompt,
+                    score_user_message,
+                    score_reply,
+                )
+                .await;
+            });
+        }
         let compact_app = app.clone();
         let compact_emit_app = app.clone();
         let compact_client = state.client.clone();
         let compact_prompt = prompt.clone();
+        let compact_event_scope = event_scope.to_string();
         tauri::async_runtime::spawn(async move {
             let chat_id = compact_prompt.chat_id.clone();
-            match tavern::compact_chat_memory_for_prompt(
-                compact_app,
-                compact_client,
-                compact_prompt,
-                false,
-            )
-            .await
+            let result = if compact_event_scope == "free-mode" {
+                tavern::compact_free_mode_memory_for_prompt(compact_app, compact_client, compact_prompt, false).await
+            } else {
+                tavern::compact_chat_memory_for_prompt(compact_app, compact_client, compact_prompt, false).await
+            };
+            match result
             {
                 Ok(result) => {
-                    if result.compacted_count > 0 || result.summary_updated {
+                    if compact_event_scope != "free-mode" && (result.compacted_count > 0 || result.summary_updated) {
                         let _ = compact_emit_app.emit(
                             "chat:compacted",
                             ChatCompactedPayload {
@@ -358,6 +420,64 @@ fn provider_max_tokens(provider: &tavern::ProviderConfig, value: u16) -> (Option
     }
 }
 
+fn extract_json_object(text: &str) -> Option<String> {
+    let start = text.find('{')?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, ch) in text[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(text[start..start + offset + ch.len_utf8()].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_watch_decision(text: &str) -> FreeModeWatchDecision {
+    let candidate = extract_json_object(text).unwrap_or_else(|| text.trim().to_string());
+    let parsed = serde_json::from_str::<serde_json::Value>(&candidate).unwrap_or_default();
+    let should_respond = parsed
+        .get("shouldRespond")
+        .and_then(|value| value.as_bool())
+        .or_else(|| parsed.get("should_respond").and_then(|value| value.as_bool()))
+        .unwrap_or(false);
+    let reason = parsed
+        .get("reason")
+        .and_then(|value| value.as_str())
+        .unwrap_or(if should_respond { "screen change may be worth a reaction" } else { "not worth interrupting" })
+        .trim()
+        .to_string();
+    let prompt = parsed
+        .get("prompt")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    FreeModeWatchDecision {
+        should_respond: should_respond && !prompt.is_empty(),
+        reason,
+        prompt,
+    }
+}
+
 fn with_provider_auth(
     request: reqwest::RequestBuilder,
     provider: &tavern::ProviderConfig,
@@ -406,15 +526,26 @@ pub async fn send_message(
     request_id: Option<String>,
 ) -> Result<(), String> {
     let event_scope = normalized_event_scope(event_scope);
-    let user_message = message.trim().to_string();
-    if user_message.is_empty() {
+    let request_message = message.trim().to_string();
+    if request_message.is_empty() {
         return Err("请输入想和鲸灵说的话。".to_string());
     }
 
-    let prompt = if event_scope == "story-mode" {
-        tavern::build_prompt_for_story_mode(
+    let (prompt, user_message) = if event_scope == "story-mode" {
+        let prompt = tavern::build_prompt_for_story_mode(
             &app,
-            &user_message,
+            &request_message,
+            chat_id,
+            character_id,
+            provider_id,
+            model.clone(),
+            client_now,
+        )?;
+        (prompt, request_message)
+    } else if event_scope == "free-mode" {
+        tavern::build_prompt_for_free_mode(
+            &app,
+            &request_message,
             chat_id,
             character_id,
             provider_id,
@@ -422,16 +553,17 @@ pub async fn send_message(
             client_now,
         )?
     } else {
-        tavern::build_prompt_for_chat(
+        let prompt = tavern::build_prompt_for_chat(
             &app,
-            &user_message,
+            &request_message,
             chat_id,
             character_id,
             preset_id,
             provider_id,
             model.clone(),
             client_now,
-        )?
+        )?;
+        (prompt, request_message)
     };
     let provider = tavern::provider_by_id(Some(&app), Some(&prompt.provider_id))?;
     if provider.provider_type == crate::web_bridge::WEB_BRIDGE_PROVIDER_TYPE {
@@ -630,6 +762,106 @@ pub async fn send_message(
         &event_scope,
         request_id.as_ref(),
     )
+}
+
+#[tauri::command]
+pub async fn evaluate_free_mode_watch_event_command(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    params: FreeModeWatchEventParams,
+) -> Result<FreeModeWatchDecision, String> {
+    if !crate::web_bridge::qa_features_enabled() {
+        return Err("QA-only feature is not available in this build.".to_string());
+    }
+    let visual_context = params.visual_context.trim();
+    if visual_context.is_empty() {
+        return Ok(FreeModeWatchDecision {
+            should_respond: false,
+            reason: "没有可用的观察上下文。".to_string(),
+            prompt: String::new(),
+        });
+    }
+    let character = tavern::load_character(&app, params.character_id.as_deref())?;
+    let provider_id = params
+        .provider_id
+        .clone()
+        .or_else(|| character.default_provider_id.clone())
+        .unwrap_or_else(|| "deepseek".to_string());
+    let provider = tavern::provider_by_id(Some(&app), Some(&provider_id))?;
+    let api_key = tavern::read_provider_api_key(&provider.id)?;
+    if provider.provider_type != "ollama" && api_key.is_none() {
+        return Err(format!("还没有设置 {} API Key。", provider.name));
+    }
+    let model = params
+        .model
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| provider.default_model.clone());
+    let system = ChatMessage {
+        role: "system".to_string(),
+        content: format!(
+            "你是 QA 自由模式的观察判定器，只输出 JSON，不要 Markdown。\
+             判断屏幕变化是否值得让角色“{}”主动说一句。\
+             默认保守，只有出现明显新信息、用户可能关心的错误/页面变化/有趣内容时才 shouldRespond=true。\
+             输出格式：{{\"shouldRespond\":true/false,\"reason\":\"简短原因\",\"prompt\":\"给角色的自然中文触发语\"}}。\
+             如果不值得回应，prompt 为空字符串。",
+            character.name
+        ),
+    };
+    let user = ChatMessage {
+        role: "user".to_string(),
+        content: format!(
+            "当前时间：{}\n触发原因：{}\n最近观察摘要：{}\n当前事件摘要：{}\n最近已经回应过：{}\n本次屏幕上下文：\n{}",
+            params.client_now.unwrap_or_default(),
+            params.reason,
+            params.previous_summary,
+            params.event_summary,
+            params.recent_reaction_summary,
+            visual_context
+        ),
+    };
+    let (max_tokens, max_completion_tokens) = provider_max_tokens(&provider, 180);
+    let body = ChatRequest {
+        model,
+        messages: vec![system, user],
+        stream: false,
+        stream_options: None,
+        thinking: if provider.provider_type == "deepseek" {
+            Some(Thinking { kind: "disabled" })
+        } else {
+            None
+        },
+        temperature: 0.2,
+        max_tokens,
+        max_completion_tokens,
+    };
+    let request = with_provider_auth(
+        state
+            .client
+            .post(tavern::provider_chat_completions_url(&provider))
+            .json(&body),
+        &provider,
+        api_key,
+    );
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("连接 {} 失败: {err}", provider.name))?;
+    if response.status() != StatusCode::OK {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_else(|_| "无法读取错误详情".to_string());
+        return Err(format!("{} 返回 {status}: {text}", provider.name));
+    }
+    let parsed: ChatResponse = response
+        .json()
+        .await
+        .map_err(|err| format!("解析 {} 判定结果失败: {err}", provider.name))?;
+    let text = parsed
+        .choices
+        .into_iter()
+        .find_map(|choice| choice.message.and_then(|message| message.content))
+        .unwrap_or_default();
+    Ok(parse_watch_decision(&text))
 }
 
 #[tauri::command]

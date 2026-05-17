@@ -45,7 +45,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                 show_window(app, "tavern");
             }
             "show_free_mode" => {
-                show_window(app, "pet");
+                hide_window(app, "pet");
                 show_window(app, "free-mode");
             }
             "show_story_mode" => {

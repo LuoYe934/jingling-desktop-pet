@@ -5,6 +5,7 @@ export interface ChatMessage {
   id: string
   role: ChatRole
   content: string
+  name?: string
   streaming?: boolean
   bookmarked?: boolean
   compacted?: boolean
@@ -25,14 +26,33 @@ export interface AppSettings {
   scale: number
   alwaysOnTop: boolean
   replyLimit: number
+  freeModeEnhancement: FreeModeEnhancementSettings
+}
+
+export interface GenieConfig {
+  serverUrl: string
+  workPath: string
+  characterName: string
+  onnxModelDir: string
+  gptModelPath: string
+  sovitsModelPath: string
+  referenceAudioPath: string
+  referenceText: string
+  language: string
+  referenceLanguage: string
 }
 
 export interface TtsSettings {
   enabled: boolean
-  engine: 'system' | 'piper'
+  engine: 'system' | 'piper' | 'genie'
   rate: number
   volume: number
   voiceURI: string
+  genie: GenieConfig
+}
+
+export interface CharacterVoiceProfile {
+  freeModeGeniePresetId?: string | null
 }
 
 export interface PiperStatus {
@@ -46,6 +66,129 @@ export interface PiperStatus {
 
 export interface PiperSynthesisResult {
   wavPath: string
+}
+
+export interface GenieStatus {
+  available: boolean
+  message: string
+  serverUrl?: string | null
+  workPath?: string | null
+  characterName?: string | null
+}
+
+export interface GenieSynthesisResult {
+  wavPath: string
+}
+
+export interface ScreenContextResult {
+  available: boolean
+  message: string
+  text: string
+  imagePath?: string | null
+  imageHash?: string | null
+  title?: string | null
+  processName?: string | null
+  capturedAt: string
+  region?: string | null
+  regionLabel?: string | null
+}
+
+export interface FreeModeScreenEnhancementSettings {
+  ocrEnabled: boolean
+  uiReadEnabled: boolean
+  defaultRegion: string
+  timeoutMs: number
+}
+
+export interface FreeModeVisionConfig {
+  enabled: boolean
+  provider: FreeModeVisionProvider
+  serviceUrl: string
+  stationUrl: string
+  qwenUrl: string
+  model: string
+  timeoutMs: number
+  sendImageBase64: boolean
+}
+
+export type FreeModeVisionProvider = 'lm-studio' | 'moondream-station' | 'qwen3-vl' | 'custom-http'
+
+export interface FreeModeWatcherSettings {
+  enabled: boolean
+  intervalMs: number
+  cooldownMs: number
+  region: string
+  mode: 'gentle'
+  hiddenObservation: boolean
+  maxVisionCallsPerHour: number
+}
+
+export interface FreeModeHttpToolConfig {
+  id: string
+  name: string
+  enabled: boolean
+  url: string
+  timeoutMs: number
+  includeScreenContext: boolean
+}
+
+export interface FreeModeMcpReservedSettings {
+  enabled: boolean
+  defaultTimeoutMs: number
+  servers: string[]
+}
+
+export interface FreeModeEnhancementSettings {
+  screen: FreeModeScreenEnhancementSettings
+  vision: FreeModeVisionConfig
+  watcher: FreeModeWatcherSettings
+  httpTools: FreeModeHttpToolConfig[]
+  mcp: FreeModeMcpReservedSettings
+}
+
+export interface FreeModeScreenContextOptions {
+  userInput?: string | null
+  prompt?: string | null
+  reason?: string | null
+  region?: string | null
+  regionLabel?: string | null
+  includeVision?: boolean | null
+  includeHttpTools?: boolean | null
+  hideOverlay?: boolean | null
+}
+
+export interface FreeModeContextResult {
+  available: boolean
+  message: string
+  screen: ScreenContextResult
+  uiText: string
+  visionText: string
+  toolText: string
+  imageBase64Sent: boolean
+}
+
+export interface FreeModeToolResult {
+  available: boolean
+  message: string
+  text: string
+}
+
+export interface FreeModeWatchEventParams {
+  characterId?: string | null
+  providerId?: string | null
+  model?: string | null
+  visualContext: string
+  previousSummary?: string
+  eventSummary?: string
+  recentReactionSummary?: string
+  reason?: string
+  clientNow?: string | null
+}
+
+export interface FreeModeWatchDecision {
+  shouldRespond: boolean
+  reason: string
+  prompt: string
 }
 
 export type RelationshipStage = 'guarded' | 'distant' | 'neutral' | 'close' | 'trusted'
@@ -348,6 +491,125 @@ export interface CharacterStageConfig {
   outputFormat: 'multiFrameJson' | string
 }
 
+export interface FreeModePose {
+  id: string
+  name: string
+  image: string
+  prompt: string
+}
+
+export interface FreeModeCg {
+  id: string
+  name: string
+  image: string
+  prompt: string
+}
+
+export interface CharacterFreeModeStageConfig {
+  enabled: boolean
+  defaultPoseId?: string | null
+  poses: FreeModePose[]
+  cgs?: FreeModeCg[]
+}
+
+export type FreeModeFrameEffect = 'none' | 'soft-pop' | 'shake' | 'blush' | string
+export type FreeModeAction = 'none' | 'lean-forward' | 'nod' | 'step-back' | 'shake' | string
+export type FreeModePlaybackState = 'idle' | 'generating' | 'playing' | 'waiting-choice'
+export type FreeModeWatchEventType = 'window-change' | 'ocr-change' | 'ui-change' | 'visual-change' | 'screen-motion'
+export type FreeModeWatchEventStatus = 'pending' | 'processing' | 'ignored' | 'responded'
+
+export interface FreeModeWatchEvent {
+  id: string
+  type: FreeModeWatchEventType
+  priority: number
+  title: string
+  processName: string
+  ocrText: string
+  uiText: string
+  visionText: string
+  imageHash: string
+  summary: string
+  createdAt: string
+  status: FreeModeWatchEventStatus
+}
+
+export interface FreeModeDirectorContext {
+  poses: FreeModePose[]
+  defaultPoseId?: string
+  currentPoseId?: string
+}
+
+export interface FreeModeChoice {
+  id?: string
+  label: string
+  prompt?: string
+}
+
+export interface FreeModePerformanceCue {
+  text?: string
+  poseId?: string
+  effect?: FreeModeFrameEffect
+  bgmId?: string
+  sceneId?: string
+  cgId?: string
+  action?: FreeModeAction
+  pauseMs?: number
+}
+
+export interface FreeModePerformanceFrame {
+  speaker?: string
+  text?: string
+  cues?: Array<string | FreeModePerformanceCue>
+  poseId?: string
+  effect?: FreeModeFrameEffect
+  bgmId?: string
+  sceneId?: string
+  cgId?: string
+  action?: FreeModeAction
+  choices?: Array<string | FreeModeChoice>
+}
+
+export interface FreeModePerformancePayload {
+  frames?: FreeModePerformanceFrame[]
+}
+
+export interface ResolvedFreeModeFrame {
+  id: string
+  speaker: string
+  text: string
+  poseId: string
+  effect: FreeModeFrameEffect
+  bgmId?: string
+  hasBgmDirective: boolean
+  sceneId?: string
+  hasSceneDirective: boolean
+  cgId?: string
+  hasCgDirective: boolean
+  action: FreeModeAction
+  choices: FreeModeChoice[]
+  cues: ResolvedFreeModeCue[]
+}
+
+export interface ResolvedFreeModeCue {
+  id: string
+  text: string
+  poseId: string
+  effect: FreeModeFrameEffect
+  bgmId?: string
+  hasBgmDirective: boolean
+  sceneId?: string
+  hasSceneDirective: boolean
+  cgId?: string
+  hasCgDirective: boolean
+  action: FreeModeAction
+  pauseMs: number
+}
+
+export interface FreeModePlaybackUnit extends ResolvedFreeModeCue {
+  frameId: string
+  speaker: string
+}
+
 export interface TavernCharacter {
   id: string
   name: string
@@ -356,6 +618,7 @@ export interface TavernCharacter {
   description: string
   personality: string
   scenario: string
+  freeModeInstructions?: string
   firstMes: string
   mesExample: string
   tags: string[]
@@ -364,6 +627,8 @@ export interface TavernCharacter {
   useCustomRelationshipPrompts: boolean
   relationshipStagePrompts: RelationshipStagePrompts
   stageConfig?: CharacterStageConfig
+  freeModeStage?: CharacterFreeModeStageConfig
+  voiceProfile?: CharacterVoiceProfile
   createdAt: string
   updatedAt: string
 }

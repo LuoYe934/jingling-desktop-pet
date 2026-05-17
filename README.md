@@ -2,89 +2,96 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-Jingling Desktop Pet is a local Windows desktop companion and AI tavern chat manager. It is built with Tauri v2, React, TypeScript, and Rust, aiming to combine a lightweight floating pet, quick chat, character cards, personas, lorebooks, prompt presets, multi-provider AI chat, relationship/affection tracking, and long-term memory management into one local desktop application.
+Jingling Desktop Pet is a local Windows desktop companion and AI tavern chat manager. It combines a transparent floating pet, quick chat, character cards, personas, lorebooks, prompt presets, relationship/affection state, memory cards, TTS, and multiple model providers into one Tauri desktop app.
 
-The project is still in active development. The current progress is around `70%+`: the desktop pet, quick chat, tavern manager, avatars, TTS, relationship system, long-term summary compaction, memory cards, built-in content library, and voice input prototype are already in place. Installer packaging, commercial settings, the final Live2D model, and more extension features can still be improved.
+The project is still under active development. The current codebase is a QA-oriented desktop build with the main tavern workflow already usable, plus experimental Free Mode and Story Mode windows. Installer packaging, final Live2D assets, release hardening, and broader import/export compatibility are still ongoing work.
 
 ## Features
 
-- Desktop pet window: transparent, frameless, always-on-top, hidden from the taskbar, with mouse dragging and mouse-wheel scaling.
-- Quick chat: click the pet to open a compact chat window with character, chat session, persona, preset, and provider switching.
-- Chat input: supports text input, `Ctrl + mouse wheel` chat font-size adjustment, and WebView/browser-based speech-to-text input. If built-in recognition is unavailable, users can use the system IME or a third-party voice input method.
-- Tavern manager: manages characters, personas, chats, lorebooks, presets, built-in content, relationship state, long-term memory, prompt preview, and extension settings.
-- Built-in content library: provides multi-style characters, public lorebooks, and presets, with single-item import, recommended-pack import, and installed-item skipping. The current built-in set includes `12` characters, `8` lorebooks, and `10` presets.
-- Character and persona avatars: supports avatar uploads, and chat bubbles sync character/user avatars. Name-based fallback avatars are used when no avatar is configured.
-- Relationship system: stores per-character affection, mood, relationship stage, relationship events, nickname settings, idle lines, and holiday reactions.
-- Long-term summary compaction: dynamically compresses older messages according to the active preset context count. AI-generated summaries are merged into `chat.summary`; compacted messages are still visible in history, while bookmarked messages are always kept as original text.
-- Memory cards: supports extracted or manually maintained long-term memories, including preferences, boundaries, user facts, promises, and notes. Cards can be confirmed, archived, and deleted.
-- Chat library: supports search, message bookmarks, chat import/export, manual long-term-memory cleanup, and summary editing.
-- Prompt preview: shows the final model input, including system prompt, long-term summary, recent original messages, bookmarked excerpts, lorebook matches, and memory-card injection.
-- Multi-provider support: DeepSeek is the default provider, with OpenAI-compatible, OpenRouter, Ollama, and similar compatible flows reserved.
-- Local data: characters, personas, chats, lorebooks, presets, relationships, and settings are stored in the system application data directory.
-- API keys: stored through Windows Credential Manager instead of plain-text project configuration.
-- TTS: supports system voices and the local Piper Chinese medium voice.
-- Desktop experience: tray menu, autostart, always-on-top controls, and the global `Ctrl+Alt+Space` shortcut for hiding or showing the pet.
+- Desktop pet: transparent, frameless, always-on-top, hidden from the taskbar, draggable, scalable with the mouse wheel, and controllable from the tray.
+- Quick chat: compact chat window with character, chat session, persona, preset, provider, token display, TTS, and speech-to-text controls.
+- Tavern manager: local management for characters, personas, chats, lorebooks, presets, built-in content, relationships, memory cards, prompt preview, and provider settings.
+- Built-in content library: manual import for built-in characters, lorebooks, and presets without overwriting user edits. The current library contains `27` characters, `15` lorebooks, and `17` presets.
+- Character staging resources: character cards can define visual-novel resources such as sprites, expressions, scenes, BGM, and default stage settings.
+- Relationship system: per-character affection, mood, relationship stage, event log, nickname settings, idle lines, holiday reactions, local scoring rules, and warm recovery.
+- Memory cards: user-visible long-term facts and preferences with global, character, and chat scopes. Cards can be active, pending, archived, confirmed, edited, or deleted.
+- Long-term summary compaction: older chat messages can be summarized into `chat.summary` and marked as compacted while still remaining visible in history.
+- Prompt preview: shows stable prefix tokens, dynamic context tokens, prompt layout version, memory cards, lorebook matches, summaries, bookmarks, and the final messages sent to the model.
+- Cache-friendly prompt layout: stable role/preset/persona content is separated from dynamic time, relationship, memory, summary, and lorebook context.
+- Multi-provider chat: built-in DeepSeek, OpenAI-compatible, OpenRouter, Qwen/DashScope, Zhipu GLM, MiniMax, Xiaomi MiMo, Ollama, and custom provider support.
+- Provider credentials: API keys are stored through Windows Credential Manager or environment variables instead of plain-text project files.
+- TTS: browser/system speech synthesis plus local Piper Chinese medium voice support.
+- Local data: characters, personas, chats, lorebooks, presets, relationships, memory cards, holidays, and provider metadata are stored locally under the app data directory.
 
-## Recent Desktop Build Updates
+## QA-Only Modes
 
-Compared with the older desktop executable, the latest release build includes the preview-side tavern and memory work:
+The QA build enables extra experimental windows that are hidden from the normal release build unless promoted:
 
-- The latest frontend preview has been rebuilt into the desktop executable.
-- Added and expanded the memory-card system for global, character-scoped, and chat-scoped long-term memories.
-- Added message-level actions to remember a message or mark it as "do not remember".
-- Expanded prompt preview with long-term summary status, recent original message count, bookmarked excerpt count, compacted message count, memory-card count, stable-prefix tokens, dynamic-context tokens, prompt layout version, matched lorebook entries, and injected memory cards.
-- Improved prompt assembly with a more cache-friendly stable prefix and a separate dynamic context section.
-- Enhanced character-card import details, including PNG card avatar fallback when avatar metadata is missing.
-- Added QA build scripts so a test build can be created under `target-qa` before being promoted to the release executable.
-- Improved chat details such as compacted-message labels, memory action buttons, speech-input affordances, and richer token/context budget display.
+- Free Mode QA: a lightweight always-on-top assistant panel that can use the selected character, remember its chat id locally, inspect the active Windows foreground title/process, open browser searches, and optionally save memory hints.
+- Story Mode QA: a visual-novel style scene window. It asks the model to return structured JSON frames with speaker, text, sprite, expression, scene, BGM, mood, and optional choices. It uses the QA preset `视觉小说演出模板 QA`.
+- DeepSeek Web Bridge Provider: a QA-only provider that can route requests through a local web bridge when enabled.
+
+Use the QA target when testing these features:
+
+```powershell
+npm run tauri:build:qa
+npm run start:pet:qa
+```
+
+Promote a verified QA executable to the normal release output with:
+
+```powershell
+npm run tauri:promote
+```
 
 ## Tech Stack
 
 - Desktop shell: Tauri v2
 - Frontend: React, TypeScript, Vite, Zustand
 - Backend: Rust, reqwest, keyring
-- Pet rendering: PixiJS, with Live2D Web Runtime reserved
-- Local TTS: Piper + `zh_CN-huayan-medium`
+- Pet rendering: PixiJS, with Live2D runtime support reserved
+- Local voice: Piper + `zh_CN-huayan-medium`
 
 ## Project Structure
 
 ```text
 jingling-desktop-pet
 ├─ src/                         React frontend
-│  ├─ components/               Pet, chat window, settings drawer, and tavern window components
+│  ├─ components/               Pet, chat, tavern, free mode, and story mode windows
 │  ├─ components/tavern/        Tavern manager sub-pages
-│  ├─ lib/                      Tauri calls, time, avatar, token estimation, and utilities
+│  ├─ lib/                      Tauri calls, avatar, speech, time, token estimation, utilities
 │  ├─ stores/                   Frontend state
 │  └─ types/                    Shared frontend/backend types
 ├─ src-tauri/                   Rust/Tauri backend
-│  ├─ src/                      Chat, tavern data, settings, tray, Piper, and relationship logic
+│  ├─ src/                      Chat, tavern data, settings, tray, provider, Piper, relationship logic
 │  ├─ resources/piper/          Piper runtime files and Chinese voice model
-│  └─ tauri.conf.json           Tauri window and packaging configuration
-├─ public/                      Static assets and Live2D model placeholder directory
-├─ docs/                        Additional documentation
-└─ scripts/                     Helper scripts, including QA build and promote-to-release flow
+│  ├─ tauri.conf.json           Normal desktop window configuration
+│  └─ tauri.qa.conf.json        QA-only free/story mode window configuration
+├─ public/                      Static assets and Live2D/model placeholders
+├─ scripts/                     Build, start, QA, and promote helper scripts
+└─ docs/                        Additional documentation when present
 ```
 
 ## Requirements
 
-Install the following tools before development:
+Install these before development:
 
 - Node.js and npm
 - Rustup / Cargo
 - Visual Studio Build Tools with the C++ toolchain
 - Microsoft WebView2 Runtime
 
-Install project dependencies:
+Install dependencies:
 
 ```powershell
-cd jingling-desktop-pet
+cd C:\Game\jingling-desktop-pet
 npm install
 ```
 
 ## Development
 
 ```powershell
-cd jingling-desktop-pet
+cd C:\Game\jingling-desktop-pet
 $env:PATH="$env:USERPROFILE\.cargo\bin;$env:PATH"
 npm run tauri:dev
 ```
@@ -95,28 +102,30 @@ Frontend-only preview:
 npm run dev
 ```
 
-The browser preview and desktop app share the same React codebase, but the browser preview does not have desktop features such as always-on-top windows, tray menus, system credentials, or global shortcuts.
+The browser preview and desktop app share the same React code, but the browser preview cannot use desktop-only features such as always-on-top windows, tray menus, secure credentials, native window management, and global shortcuts.
 
 ## Build
 
+Frontend build:
+
 ```powershell
-cd jingling-desktop-pet
-$env:PATH="$env:USERPROFILE\.cargo\bin;$env:PATH"
 npm run build
-npm run tauri:build
 ```
 
-The project also provides two common desktop build targets:
+Desktop builds:
 
 ```powershell
-# Build a QA executable under src-tauri\target-qa
+# Normal desktop executable under src-tauri\target\release
+npm run tauri:build:release
+
+# QA executable under src-tauri\target-qa\release
 npm run tauri:build:qa
 
-# Copy the QA build into the release directory
+# Copy the tested QA executable into the normal release directory
 npm run tauri:promote
 
-# Build the release executable directly
-npm run tauri:build:release
+# Full Tauri bundle, when installer/package output is needed
+npm run tauri:bundle
 ```
 
 Common executable paths:
@@ -126,115 +135,114 @@ src-tauri\target\release\jingling_desktop_pet.exe
 src-tauri\target-qa\release\jingling_desktop_pet.exe
 ```
 
-Note: `npm run build` only builds the frontend `dist` directory. It does not update an already compiled desktop executable. After source changes, run a Tauri build command again so the desktop app includes the latest frontend and backend code.
+Note: `npm run build` only updates the frontend `dist` directory. It does not update an already compiled desktop executable. Run a Tauri build command after source changes.
 
 ## Data Location
 
-Tavern data is stored in the system application data directory, for example:
+Tavern data is stored in the application data directory:
 
 ```text
 %APPDATA%\com.ly.jingling.pet\tavern_data
 ```
 
-Common data includes:
+Common files and folders:
 
 ```text
+avatars/
 characters/
-personas/
 chats/
-worldbooks/
+personas/
 presets/
 relationships/
-avatars/
-memory_cards.json
-settings.json
+worldbooks/
 holidays.json
+memory_cards.json
+providers.json
+settings.json
 ```
 
-API keys are stored in Windows Credential Manager and are not saved in the Git repository.
+API keys are stored in Windows Credential Manager or read from supported environment variables, such as `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `DASHSCOPE_API_KEY`, `ZHIPU_API_KEY`, and `MIMO_API_KEY`.
 
-## Long-Term Summary Compaction
+## Prompt And Memory
 
-Long-term chat memory is controlled dynamically by the active preset context count:
+Chat prompts are built from several layers:
 
-- Let the context message count be `N`.
-- The latest `N` uncompacted original messages are kept by default.
-- When uncompacted messages exceed the limit, the older `N / 2` non-bookmarked messages are summarized.
-- The AI merges the old summary and the current batch into a new structured `chat.summary`.
-- Compacted old messages are marked as compacted and no longer sent to the model, but remain visible in chat history.
-- Bookmarked messages are never automatically compacted; bookmarking a compacted message restores it as original text.
+- Stable prefix: preset system prompt, character card, example dialogue, persona, author notes, output rules, and reply length rules.
+- Chat history: recent uncompacted messages selected by the active preset.
+- Dynamic context: current local time, relationship state, memory cards, long-term summary, bookmarked excerpts, and matched lorebook entries.
+- Current input: the latest user message.
 
-The long-term summary focuses on:
+Long-term summary compaction keeps the active chat window manageable:
 
-- User identity and preferences
-- Important relationship details with characters
-- Important events that already happened
-- Unfinished topics or promises
-- User emotional tendencies
-- Nicknames, boundaries, and habits that characters should remember
+- The active preset controls context message count and input budget.
+- When active uncompacted messages reach the context limit, the older front half is summarized.
+- When the estimated input tokens exceed half of the preset input budget, the older front half can also be summarized.
+- Compacted messages are not sent raw to the model, but remain visible in history.
+- Bookmarked messages are preserved and can be injected as excerpts.
 
-## Memory Cards
+Memory cards are a separate, user-controllable memory layer:
 
-Memory cards store stable facts and preferences beyond the rolling chat summary:
+- Scopes: global, character, and chat.
+- Types: preference, boundary, profile, promise, and note.
+- Statuses: active, pending, and archived.
+- Prompt injection selects matching active cards by scope, status, and importance.
 
-- Supports global, character, and chat scopes.
-- Supports preference, boundary, user fact, promise, and note types.
-- Chat messages can be manually marked as "remember this" or "do not remember this".
-- Cards can be viewed, searched, edited, confirmed, archived, and deleted in the tavern memory panel.
-- When building prompts, cards are filtered by scope, status, and importance. Archived cards are not injected.
+## Relationship System
+
+Each character has a shared relationship state across chats:
+
+- Affection and mood range from `-100` to `100`.
+- Stages include guarded, distant, neutral, close, and trusted.
+- Local rules handle obvious praise, care, apology, insults, threats, boundaries, and role-specific preferences.
+- Ambiguous relationship changes can fall back to model JSON scoring.
+- Events are kept as a short recent log and shown in the relationship panel.
+- Nicknames, idle lines, and holiday reactions are managed per character.
+
+## Provider Notes
+
+Built-in providers include:
+
+- DeepSeek
+- OpenAI-compatible endpoint
+- OpenRouter
+- Qwen / Alibaba DashScope
+- Zhipu GLM
+- MiniMax
+- Xiaomi MiMo
+- Ollama local models
+- DeepSeek Web Bridge in QA builds
+
+Provider settings support editable model names, base URLs, auth type, and token limit field selection. Non-DeepSeek providers do not receive DeepSeek-specific request options.
 
 ## Piper Voice
 
-Piper Chinese voice files are located at:
+Piper runtime files are stored under:
 
 ```text
 src-tauri\resources\piper
 ```
 
-The current repository keeps the Chinese medium model and required runtime dependencies:
+The current Chinese voice files are:
 
 ```text
 src-tauri\resources\piper\voices\zh_CN-huayan-medium.onnx
 src-tauri\resources\piper\voices\zh_CN-huayan-medium.onnx.json
 ```
 
-After selecting `Piper Chinese medium` in settings, use check and test voice to verify that it works.
+After selecting `Piper Chinese medium` in settings, use the voice check/test action to verify playback.
 
 ## Common Operations
 
 - Left-click the pet: show or hide quick chat.
 - Right-click the pet: show or hide the tavern manager.
-- Mouse wheel: scale the pet; the value syncs with the settings drawer.
+- Mouse wheel over the pet: scale the pet.
 - `Ctrl + mouse wheel` in the chat message area: adjust chat font size.
 - `Ctrl+Alt+Space`: hide or show the pet.
-- Tavern extension page: save provider API keys.
-- Chat settings area: switch character, chat session, persona, preset, and provider.
-- Chat input area: the paper-plane button sends a message; during AI generation it becomes a stop button. The microphone button starts speech-to-text, and recognized text is placed into the input box without auto-sending.
-- Tavern chat library: view history, bookmark messages, edit summaries, and manually organize long-term memory.
-- Tavern relationship page: view and reset character affection, mood, and relationship settings.
-- Tavern built-in library: filter built-in characters, lorebooks, and presets, with search, single-item import, and recommended-pack import.
-
-## Git Notes
-
-This repository commits source code and required assets only. Dependencies and build outputs are ignored.
-
-Common ignored directories include:
-
-```text
-node_modules
-dist
-src-tauri/target
-src-tauri/target-qa
-output
-*.log
-```
-
-After cloning the project again, run:
-
-```powershell
-npm install
-npm run tauri:build
-```
+- Tavern > Extensions > Provider: configure providers and API keys.
+- Tavern > Content Library: import built-in characters, lorebooks, and presets.
+- Tavern > Relationship: inspect affection, mood, event logs, role preferences, nicknames, idle lines, and holiday reactions.
+- Tavern > Memory: inspect, confirm, edit, archive, and delete memory cards.
+- Tavern > Prompt Preview: verify exactly what is being sent to the model.
 
 ## Verification
 
@@ -242,8 +250,26 @@ npm run tauri:build
 npm run build
 npm run lint
 cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml tavern::tests
+npm run tauri:build:qa
+```
+
+## Git Notes
+
+This repository should commit source code and required assets only. Do not commit local chat data, API keys, build outputs, temporary backups, generated release packages, or personal AppData files.
+
+Common ignored or uncommitted paths include:
+
+```text
+node_modules
+dist
+src-tauri/target
+src-tauri/target-qa
+release-packages
+*.log
+*.bak
 ```
 
 ## Current Status
 
-This is a development version around the "Tavern affection update - 70%+" milestone. The current build includes the basic desktop pet experience, quick chat, tavern manager, character/persona avatars, DeepSeek/provider integration, local data, Piper Chinese voice, relationship and affection events, long-term summary compaction, memory cards, expanded built-in content, speech input, and enhanced prompt preview. Future work can continue with the final Live2D model, installer packaging, plugin extensions, movement/click interaction polish, import/export compatibility, and more complete commercial settings.
+The current code is a QA-stage desktop build with the core pet, chat, tavern, provider, relationship, memory, prompt preview, Piper voice, and built-in content workflows in place. The latest QA track also includes Free Mode and Story Mode experiments. Future work should focus on installer packaging, release polish, final Live2D assets, stronger import/export compatibility, UI refinement, and safer distribution defaults.

@@ -3,7 +3,14 @@ import type { CSSProperties, FormEvent } from 'react'
 import { Ban, BookOpen, Brain, Mic, Plus, Send, Square } from 'lucide-react'
 import { usePetStore } from '../stores/petStore'
 import { formatChatOption, normalizeChatList } from '../lib/chatList'
-import { getDistinctSpeechVoices, pickSpeechVoice, speakLocalText, speakPiperText, stopSpeech } from '../lib/speech'
+import {
+  createQuotedSpeechStreamParser,
+  getDistinctSpeechVoices,
+  pickSpeechVoice,
+  speakQuotedDialogueQueue,
+  stopSpeech,
+} from '../lib/speech'
+import type { QuotedSpeechSegment } from '../lib/speech'
 import { formatLocalDateTime, nowStamp } from '../lib/time'
 import { estimatePromptTokens, estimateTokenCount } from '../lib/tokenEstimate'
 import {
@@ -220,7 +227,8 @@ export function ChatPanel() {
   const ttsSettingsRef = useRef(usePetStore.getState().ttsSettings)
   const wasTtsEnabledRef = useRef(usePetStore.getState().ttsSettings.enabled)
   const voicesRef = useRef<SpeechSynthesisVoice[]>([])
-  const lastSpokenReplyRef = useRef<{ key: string; at: number } | null>(null)
+  const quotedSpeechParserRef = useRef(createQuotedSpeechStreamParser())
+  const parsedStreamingSpeechRef = useRef(false)
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([])
   const settings = usePetStore((state) => state.settings)
   const ttsSettings = usePetStore((state) => state.ttsSettings)
@@ -407,26 +415,8 @@ export function ChatPanel() {
     }
   }, [setTtsSettings])
 
-  function speakAssistantReply(text: string, chatId = activeChatIdRef.current) {
-    const content = text.trim()
-    if (!content) return
-
-    const key = `${chatId || 'pending'}:${content}`
-    const now = Date.now()
-    const lastSpokenReply = lastSpokenReplyRef.current
-    if (lastSpokenReply?.key === key && now - lastSpokenReply.at < 10_000) {
-      return
-    }
-
-    lastSpokenReplyRef.current = { key, at: now }
-    const currentTtsSettings = ttsSettingsRef.current
-    if (!currentTtsSettings.enabled) return
-    if (currentTtsSettings.engine === 'piper') {
-      void speakPiperText(content, currentTtsSettings).catch(() => undefined)
-      return
-    }
-
-    speakLocalText(content, currentTtsSettings, voicesRef.current)
+  function speakQuotedAssistantReply(input: string | QuotedSpeechSegment[], append = false) {
+    void speakQuotedDialogueQueue(input, ttsSettingsRef.current, voicesRef.current, { append }).catch(() => undefined)
   }
 
   useEffect(() => {
@@ -570,6 +560,11 @@ export function ChatPanel() {
     listenToChatEvents({
       onChunk: ({ content, eventScope = 'chat' }) => {
         if (eventScope !== 'chat') return
+        const speechSegments = quotedSpeechParserRef.current.feed(content)
+        if (speechSegments.length) {
+          parsedStreamingSpeechRef.current = true
+          speakQuotedAssistantReply(speechSegments, true)
+        }
         setIsStreaming(true)
         setMotion('thinking')
         setMessages((current) => {
@@ -614,9 +609,13 @@ export function ChatPanel() {
         } else {
           setLastCacheStats(null)
         }
-        if (!cancelled) {
-          speakAssistantReply(content, chatId)
+        if (cancelled) {
+          stopSpeech()
+        } else if (!parsedStreamingSpeechRef.current) {
+          speakQuotedAssistantReply(content)
         }
+        quotedSpeechParserRef.current.reset()
+        parsedStreamingSpeechRef.current = false
         setMessages((current) => {
           const next = [...current]
           const last = next[next.length - 1]
@@ -646,6 +645,9 @@ export function ChatPanel() {
       },
       onError: ({ message, eventScope = 'chat' }) => {
         if (eventScope !== 'chat') return
+        stopSpeech()
+        quotedSpeechParserRef.current.reset()
+        parsedStreamingSpeechRef.current = false
         setIsStreaming(false)
         setMotion('error')
         setMessages((current) => [
@@ -839,6 +841,9 @@ export function ChatPanel() {
   async function stopCurrentResponse() {
     if (!isStreaming) return
     await cancelMessage().catch(() => undefined)
+    stopSpeech()
+    quotedSpeechParserRef.current.reset()
+    parsedStreamingSpeechRef.current = false
     if (!runningInTauri()) {
       setMessages((current) => {
         const next = [...current]
@@ -934,6 +939,9 @@ export function ChatPanel() {
     setInput('')
     setIsStreaming(true)
     setMotion('thinking')
+    stopSpeech()
+    quotedSpeechParserRef.current.reset()
+    parsedStreamingSpeechRef.current = false
     const userCreatedAt = nowStamp()
     setMessages((current) => [
       ...current,
@@ -986,12 +994,15 @@ export function ChatPanel() {
           ]
         })
         setLastReplyTokens(estimateTokenCount(previewReply))
-        speakAssistantReply(previewReply)
+        speakQuotedAssistantReply(previewReply)
         setIsStreaming(false)
         setMotion('happy')
         window.setTimeout(() => setMotion('idle'), 1200)
       }
     } catch (error) {
+      stopSpeech()
+      quotedSpeechParserRef.current.reset()
+      parsedStreamingSpeechRef.current = false
       setIsStreaming(false)
       setMotion('error')
       setMessages((current) => [

@@ -2,7 +2,7 @@ import { ChevronRight, Minus, Send, SkipForward, Square, Volume2, VolumeX } from
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { avatarImageSrc, localMediaSrc } from '../lib/avatar'
-import { getDistinctSpeechVoices, speakSentenceQueue, stopSpeech } from '../lib/speech'
+import { getDistinctSpeechVoices, speakQuotedDialogueQueue, stopSpeech } from '../lib/speech'
 import { formatLocalDateTime, nowStamp } from '../lib/time'
 import {
   cancelMessage,
@@ -14,6 +14,7 @@ import {
 } from '../lib/tauri'
 import { usePetStore } from '../stores/petStore'
 import type { TavernCharacter } from '../types/tauri'
+import { GenieVoiceSelect } from './GenieVoiceSelect'
 
 const storyModeChatIdStorageKey = 'jingling-story-mode-chat-id'
 
@@ -204,6 +205,13 @@ export function StoryModeWindow() {
   const bgmSrc = localMediaSrc(activeBgm?.audio || frame.bgm)
   const VoiceIcon = ttsSettings.enabled ? Volume2 : VolumeX
 
+  function toggleTts() {
+    if (ttsSettings.enabled) {
+      stopSpeech()
+    }
+    setTtsSettings({ ...ttsSettings, enabled: !ttsSettings.enabled })
+  }
+
   useEffect(() => {
     listCharacters()
       .then((items) => {
@@ -268,10 +276,15 @@ export function StoryModeWindow() {
         const firstFrame = payload.frames[0]
         const frameStatus = [firstFrame?.mood, firstFrame?.sfx, firstFrame?.bgmId || firstFrame?.bgm].filter(Boolean).join(' / ')
         setStatus(cancelled ? '已停止' : payload.parseError || frameStatus || '剧情已推进')
-        if (!cancelled && firstFrame?.text.trim()) void speakSentenceQueue(firstFrame.text, ttsSettings, voices)
+        if (cancelled) {
+          stopSpeech()
+        } else if (firstFrame?.text.trim()) {
+          void speakQuotedDialogueQueue(firstFrame.text, ttsSettings, voices).catch(() => undefined)
+        }
       },
       onError: ({ message, eventScope = 'chat', requestId }) => {
         if (eventScope !== 'story-mode' || requestId !== requestIdRef.current) return
+        stopSpeech()
         setIsStreaming(false)
         setStatus(message)
         setFrames([{ speaker: '系统', text: message }])
@@ -318,6 +331,7 @@ export function StoryModeWindow() {
       eventScope: 'story-mode',
       requestId,
     }).catch((error) => {
+      stopSpeech()
       setIsStreaming(false)
       setStatus(String(error))
       setFrames([{ speaker: '系统', text: String(error) }])
@@ -330,7 +344,7 @@ export function StoryModeWindow() {
     setFrameIndex((current) => {
       const next = Math.min(current + 1, frames.length - 1)
       const target = frames[next]
-      if (target?.text.trim()) void speakSentenceQueue(target.text, ttsSettings, voices)
+      if (target?.text.trim()) void speakQuotedDialogueQueue(target.text, ttsSettings, voices).catch(() => undefined)
       return next
     })
   }
@@ -367,8 +381,13 @@ export function StoryModeWindow() {
               </option>
             ))}
           </select>
+          <GenieVoiceSelect settings={ttsSettings} onChange={setTtsSettings} compact />
           <span>{status}</span>
-          <button type="button" title={ttsSettings.enabled ? '关闭语音' : '开启语音'} onClick={() => setTtsSettings({ ...ttsSettings, enabled: !ttsSettings.enabled })}>
+          <button
+            type="button"
+            title={ttsSettings.enabled ? '关闭引号对白朗读' : '开启引号对白朗读'}
+            onClick={toggleTts}
+          >
             <VoiceIcon size={16} />
           </button>
           <button type="button" title="隐藏" onClick={() => void hideCurrentWindow()}>

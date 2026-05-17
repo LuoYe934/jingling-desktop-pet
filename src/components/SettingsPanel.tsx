@@ -17,10 +17,27 @@ import {
   SlidersHorizontal,
   Volume2,
 } from 'lucide-react'
-import { getDistinctSpeechVoices, pickSpeechVoice, speakLocalText, speakPiperText } from '../lib/speech'
-import { getPiperStatus, runningInTauri, saveApiKey, speakText, toggleAutostart } from '../lib/tauri'
+import {
+  getDistinctSpeechVoices,
+  pickSpeechVoice,
+  speakGenieText,
+  speakLocalText,
+  speakPiperText,
+  stopSpeech,
+} from '../lib/speech'
+import {
+  getGenieStatus,
+  getPiperStatus,
+  pickLocalDirectory,
+  pickLocalFile,
+  runningInTauri,
+  saveApiKey,
+  speakText,
+  toggleAutostart,
+} from '../lib/tauri'
 import { usePetStore } from '../stores/petStore'
-import type { AppSettings, PiperStatus, ProviderConfig, TtsSettings } from '../types/tauri'
+import type { AppSettings, GenieConfig, GenieStatus, PiperStatus, ProviderConfig, TtsSettings } from '../types/tauri'
+import { GenieVoiceSelect } from './GenieVoiceSelect'
 
 interface SettingsPanelProps {
   settings: AppSettings
@@ -53,6 +70,7 @@ export function SettingsPanel({
   const [autostart, setAutostart] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [piperStatus, setPiperStatus] = useState<PiperStatus | null>(null)
+  const [genieStatus, setGenieStatus] = useState<GenieStatus | null>(null)
   const [ttsStatus, setTtsStatus] = useState('')
   const hasKey = usePetStore((state) => state.hasApiKey)
   const showMessageTimes = usePetStore((state) => state.showMessageTimes)
@@ -68,6 +86,9 @@ export function SettingsPanel({
   }
 
   function updateTts<K extends keyof TtsSettings>(key: K, value: TtsSettings[K]) {
+    if (key === 'enabled' && value === false) {
+      stopSpeech()
+    }
     onTtsSettingsChange({ ...ttsSettings, [key]: value })
   }
 
@@ -77,15 +98,60 @@ export function SettingsPanel({
     return status
   }
 
+  async function refreshGenieStatus(config = ttsSettings.genie) {
+    const status = await getGenieStatus(config)
+    setGenieStatus(status)
+    return status
+  }
+
   useEffect(() => {
     refreshPiperStatus().catch(() => undefined)
   }, [])
+
+  function updateGenie<K extends keyof GenieConfig>(key: K, value: GenieConfig[K]) {
+    onTtsSettingsChange({
+      ...ttsSettings,
+      genie: {
+        ...ttsSettings.genie,
+        [key]: value,
+      },
+    })
+  }
+
+  async function chooseGenieDirectory(key: 'workPath' | 'onnxModelDir') {
+    const selected = await pickLocalDirectory()
+    if (selected) updateGenie(key, selected)
+  }
+
+  async function chooseGenieFile(key: 'gptModelPath' | 'sovitsModelPath' | 'referenceAudioPath') {
+    const filters =
+      key === 'gptModelPath'
+        ? [{ name: 'GPT model', extensions: ['ckpt'] }]
+        : key === 'sovitsModelPath'
+          ? [{ name: 'SoVITS model', extensions: ['pth'] }]
+          : [{ name: 'Reference audio', extensions: ['wav', 'mp3', 'ogg', 'm4a', 'flac'] }]
+    const selected = await pickLocalFile(filters)
+    if (selected) updateGenie(key, selected)
+  }
+
+  function normalizeEngine(value: string): TtsSettings['engine'] {
+    return value === 'piper' || value === 'genie' ? value : 'system'
+  }
 
   function previewVoice(nextSettings = ttsSettings, delayMs = 0) {
     if (nextSettings.engine === 'piper') {
       window.setTimeout(() => {
         void speakPiperText('你好啊，呼噜。', nextSettings, { ignoreEnabled: true })
           .then((ok) => setTtsStatus(ok ? 'Piper 已试听' : 'Piper 未启动'))
+          .catch((error) => setTtsStatus(String(error)))
+      }, delayMs)
+      return
+    }
+
+    if (nextSettings.engine === 'genie') {
+      window.setTimeout(() => {
+        void speakGenieText('你好啊，呼噜。', nextSettings, { ignoreEnabled: true })
+          .then((ok) => setTtsStatus(ok ? 'Genie 已试听' : 'Genie 未生成音频'))
           .catch((error) => setTtsStatus(String(error)))
       }, delayMs)
       return
@@ -130,9 +196,27 @@ export function SettingsPanel({
     onTtsSettingsChange(nextSettings)
     if (engine === 'piper') {
       void refreshPiperStatus().then((status) => setTtsStatus(status.message)).catch((error) => setTtsStatus(String(error)))
+    } else if (engine === 'genie') {
+      void refreshGenieStatus()
+        .then((status) => setTtsStatus(status.message))
+        .catch((error) => setTtsStatus(String(error)))
     } else {
       setTtsStatus('已切换到系统语音')
     }
+  }
+
+  function checkTtsEngine() {
+    if (ttsSettings.engine === 'piper') {
+      void refreshPiperStatus().then((status) => setTtsStatus(status.message)).catch((error) => setTtsStatus(String(error)))
+      return
+    }
+    if (ttsSettings.engine === 'genie') {
+      void refreshGenieStatus()
+        .then((status) => setTtsStatus(status.message))
+        .catch((error) => setTtsStatus(String(error)))
+      return
+    }
+    setTtsStatus('系统语音由当前系统浏览器/WebView 提供。')
   }
 
   async function saveKey() {
@@ -245,13 +329,13 @@ export function SettingsPanel({
         <div className="settings-row">
           <label>
             <Volume2 size={14} />
-            播报
+            对白朗读
           </label>
           <button
             className={`toggle ${ttsSettings.enabled ? 'toggle--on' : ''}`}
             type="button"
             onClick={() => updateTts('enabled', !ttsSettings.enabled)}
-            title="语音播报"
+            title="只朗读引号内对白"
           >
             <span />
           </button>
@@ -266,22 +350,160 @@ export function SettingsPanel({
           <select
             id="tts-engine"
             value={ttsSettings.engine}
-            onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-              changeTtsEngine(event.target.value === 'piper' ? 'piper' : 'system')
-            }
+            onChange={(event: ChangeEvent<HTMLSelectElement>) => changeTtsEngine(normalizeEngine(event.target.value))}
           >
             <option value="system">系统语音</option>
             <option value="piper">Piper 中文 medium</option>
+            <option value="genie">Genie 角色声</option>
           </select>
           <button
             className="secondary-button sample-button"
             type="button"
-            onClick={() => void refreshPiperStatus().then((status) => setTtsStatus(status.message))}
-            title="检测 Piper"
+            onClick={checkTtsEngine}
+            title="检测语音引擎"
           >
             检测
           </button>
         </div>
+
+        <div className="settings-row">
+          <label>
+            <AudioLines size={14} />
+            角色声
+          </label>
+          <GenieVoiceSelect settings={ttsSettings} onChange={onTtsSettingsChange} />
+          <span />
+        </div>
+
+        {ttsSettings.engine === 'genie' ? (
+          <>
+            <div className="settings-row settings-row--wide">
+              <label htmlFor="genie-server-url">
+                <Server size={14} />
+                Genie URL
+              </label>
+              <input
+                id="genie-server-url"
+                value={ttsSettings.genie.serverUrl}
+                onChange={(event) => updateGenie('serverUrl', event.target.value)}
+              />
+              <span />
+            </div>
+
+            <div className="settings-row settings-row--wide">
+              <label htmlFor="genie-work-path">Genie目录</label>
+              <input
+                id="genie-work-path"
+                value={ttsSettings.genie.workPath}
+                onChange={(event) => updateGenie('workPath', event.target.value)}
+              />
+              <button className="secondary-button sample-button" type="button" onClick={() => void chooseGenieDirectory('workPath')}>
+                选择
+              </button>
+            </div>
+
+            <div className="settings-row">
+              <label htmlFor="genie-character">角色名</label>
+              <input
+                id="genie-character"
+                value={ttsSettings.genie.characterName}
+                onChange={(event) => updateGenie('characterName', event.target.value)}
+              />
+              <span />
+            </div>
+
+            <div className="settings-row settings-row--wide">
+              <label htmlFor="genie-onnx-dir">ONNX目录</label>
+              <input
+                id="genie-onnx-dir"
+                value={ttsSettings.genie.onnxModelDir}
+                onChange={(event) => updateGenie('onnxModelDir', event.target.value)}
+              />
+              <button className="secondary-button sample-button" type="button" onClick={() => void chooseGenieDirectory('onnxModelDir')}>
+                选择
+              </button>
+            </div>
+
+            <div className="settings-row settings-row--wide">
+              <label htmlFor="genie-gpt-model">GPT模型</label>
+              <input
+                id="genie-gpt-model"
+                value={ttsSettings.genie.gptModelPath}
+                onChange={(event) => updateGenie('gptModelPath', event.target.value)}
+              />
+              <button className="secondary-button sample-button" type="button" onClick={() => void chooseGenieFile('gptModelPath')}>
+                选择
+              </button>
+            </div>
+
+            <div className="settings-row settings-row--wide">
+              <label htmlFor="genie-sovits-model">SoVITS</label>
+              <input
+                id="genie-sovits-model"
+                value={ttsSettings.genie.sovitsModelPath}
+                onChange={(event) => updateGenie('sovitsModelPath', event.target.value)}
+              />
+              <button className="secondary-button sample-button" type="button" onClick={() => void chooseGenieFile('sovitsModelPath')}>
+                选择
+              </button>
+            </div>
+
+            <div className="settings-row settings-row--wide">
+              <label htmlFor="genie-reference-audio">参考音频</label>
+              <input
+                id="genie-reference-audio"
+                value={ttsSettings.genie.referenceAudioPath}
+                onChange={(event) => updateGenie('referenceAudioPath', event.target.value)}
+              />
+              <button
+                className="secondary-button sample-button"
+                type="button"
+                onClick={() => void chooseGenieFile('referenceAudioPath')}
+              >
+                选择
+              </button>
+            </div>
+
+            <div className="settings-row settings-row--wide">
+              <label htmlFor="genie-reference-text">参考文本</label>
+              <textarea
+                id="genie-reference-text"
+                value={ttsSettings.genie.referenceText}
+                onChange={(event) => updateGenie('referenceText', event.target.value)}
+                rows={2}
+              />
+              <span />
+            </div>
+
+            <div className="settings-row">
+              <label htmlFor="genie-language">文本语言</label>
+              <select
+                id="genie-language"
+                value={ttsSettings.genie.language}
+                onChange={(event) => updateGenie('language', event.target.value)}
+              >
+                <option value="zh">zh</option>
+                <option value="ja">ja</option>
+                <option value="en">en</option>
+              </select>
+              <span />
+            </div>
+
+            <div className="settings-row">
+              <label htmlFor="genie-reference-language">参考语言</label>
+              <select
+                id="genie-reference-language"
+                value={ttsSettings.genie.referenceLanguage}
+                onChange={(event) => updateGenie('referenceLanguage', event.target.value)}
+              >
+                <option value="zh">zh</option>
+                <option value="ja">ja</option>
+                <option value="en">en</option>
+              </select>
+              <span>{genieStatus?.available ? '可用' : '未检测'}</span>
+            </div>
+          </>
+        ) : null}
 
         <div className="settings-row">
           <label>
@@ -323,10 +545,16 @@ export function SettingsPanel({
           <select
             id="voice"
             value={ttsSettings.voiceURI}
-            disabled={ttsSettings.engine === 'piper'}
+            disabled={ttsSettings.engine === 'piper' || ttsSettings.engine === 'genie'}
             onChange={(event: ChangeEvent<HTMLSelectElement>) => changeVoice(event.target.value)}
           >
-            <option value="">{ttsSettings.engine === 'piper' ? '固定：zh_CN huayan medium' : '系统默认中文'}</option>
+            <option value="">
+              {ttsSettings.engine === 'piper'
+                ? '固定：zh_CN huayan medium'
+                : ttsSettings.engine === 'genie'
+                  ? '由 Genie 角色配置决定'
+                  : '系统默认中文'}
+            </option>
             {voices.map((voice) => (
               <option key={voice.voiceURI} value={voice.voiceURI}>
                 {voiceLabel(voice)}
@@ -417,8 +645,10 @@ export function SettingsPanel({
 
         <p className="settings-note">
           {ttsSettings.engine === 'piper'
-            ? piperStatus?.message || ttsStatus || 'Piper 只使用中文 medium；模型没下完时不会启动。'
-            : ttsStatus || '口头禅：呼噜，慢慢来就好。'}
+            ? piperStatus?.message || ttsStatus || 'Piper 只朗读引号内对白；模型没下完时不会启动。'
+            : ttsSettings.engine === 'genie'
+              ? genieStatus?.message || ttsStatus || 'Genie 只朗读引号内对白；无引号不发声，不可用时静默跳过。'
+            : ttsStatus || '只朗读回复中引号内的对白，旁白会静默。'}
         </p>
       </div>
     </div>

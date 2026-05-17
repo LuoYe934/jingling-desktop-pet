@@ -1,4 +1,6 @@
 mod deepseek;
+#[cfg(not(mobile))]
+mod genie;
 mod memory;
 #[cfg(not(mobile))]
 mod piper;
@@ -9,18 +11,22 @@ mod tray;
 mod web_bridge;
 
 use deepseek::{
-    cancel_message, compact_chat_memory_command, extract_memory_cards_for_chat, send_message,
-    AppState,
+    cancel_message, compact_chat_memory_command, evaluate_free_mode_watch_event_command,
+    extract_memory_cards_for_chat, send_message, AppState,
 };
+#[cfg(not(mobile))]
+use genie::{genie_status, synthesize_genie_command, GenieState};
 #[cfg(not(mobile))]
 use piper::{piper_status, synthesize_piper_command};
 use settings::{
-    clear_memory_command, get_active_window_context, get_settings, has_api_key, hide_chat_window,
-    hide_free_mode_window, hide_story_mode_window, hide_tavern_window, open_browser_search,
-    save_api_key, set_always_on_top, set_pet_scale, show_chat_window, show_free_mode_window,
-    show_story_mode_window, show_tavern_window, speak_text_command, toggle_autostart,
-    toggle_chat_window, toggle_free_mode_window, toggle_story_mode_window, toggle_tavern_window,
-    update_settings, TtsPreviewState,
+    call_free_mode_http_tool_command, capture_free_mode_context_command, capture_screen_text_command,
+    clear_memory_command, get_active_window_context, get_settings,
+    has_api_key, hide_chat_window, hide_free_mode_window, hide_story_mode_window,
+    hide_tavern_window, open_browser_search, save_api_key, set_always_on_top, set_pet_scale,
+    show_chat_window, show_free_mode_window, show_story_mode_window, show_tavern_window,
+    speak_text_command, test_free_mode_vision_command, toggle_autostart, toggle_chat_window,
+    toggle_free_mode_window, toggle_story_mode_window, toggle_tavern_window, update_settings,
+    TtsPreviewState,
 };
 use tavern::{
     bookmark_message, clear_chat_messages, create_chat, delete_chat_command, export_character_card,
@@ -94,11 +100,14 @@ fn setup_desktop(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
         let _ = tavern.set_always_on_top(true);
         let _ = tavern.hide();
     }
-    if let Some(free_mode) = app.get_webview_window("free-mode") {
-        let _ = free_mode.set_always_on_top(true);
-        let _ = free_mode.set_skip_taskbar(true);
-        let _ = free_mode.hide();
-    }
+        if let Some(free_mode) = app.get_webview_window("free-mode") {
+            let _ = free_mode.set_always_on_top(true);
+            let _ = free_mode.set_skip_taskbar(true);
+            let _ = free_mode.hide();
+        }
+        if let Ok(settings) = settings::get_settings(app.handle().clone()) {
+            let _ = settings::ensure_free_mode_vision_bridge_for_settings(app.handle(), &settings);
+        }
     if let Some(story_mode) = app.get_webview_window("story-mode") {
         let _ = story_mode.set_always_on_top(true);
         let _ = story_mode.hide();
@@ -112,6 +121,9 @@ pub fn run() {
         .manage(AppState::default())
         .manage(WebBridgeState::default())
         .manage(TtsPreviewState::default());
+
+    #[cfg(not(mobile))]
+    let builder = builder.manage(GenieState::default());
 
     #[cfg(not(mobile))]
     let builder = builder
@@ -138,6 +150,7 @@ pub fn run() {
     #[cfg(not(mobile))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         send_message,
+        evaluate_free_mode_watch_event_command,
         compact_chat_memory_command,
         extract_memory_cards_for_chat,
         cancel_message,
@@ -161,7 +174,13 @@ pub fn run() {
         hide_story_mode_window,
         toggle_story_mode_window,
         get_active_window_context,
+        capture_screen_text_command,
+        capture_free_mode_context_command,
+        test_free_mode_vision_command,
+        call_free_mode_http_tool_command,
         open_browser_search,
+        genie_status,
+        synthesize_genie_command,
         piper_status,
         synthesize_piper_command,
         speak_text_command,
@@ -222,6 +241,7 @@ pub fn run() {
     #[cfg(mobile)]
     let builder = builder.invoke_handler(tauri::generate_handler![
             send_message,
+            evaluate_free_mode_watch_event_command,
             compact_chat_memory_command,
             extract_memory_cards_for_chat,
             cancel_message,
@@ -245,6 +265,10 @@ pub fn run() {
             hide_story_mode_window,
             toggle_story_mode_window,
             get_active_window_context,
+            capture_screen_text_command,
+            capture_free_mode_context_command,
+            test_free_mode_vision_command,
+            call_free_mode_http_tool_command,
             open_browser_search,
             speak_text_command,
             clear_memory_command,

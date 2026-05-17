@@ -15,6 +15,17 @@ import type {
   ChatChunkPayload,
   ChatDonePayload,
   ChatErrorPayload,
+  GenieConfig,
+  GenieStatus,
+  GenieSynthesisResult,
+  FreeModeContextResult,
+  FreeModeEnhancementSettings,
+  FreeModeHttpToolConfig,
+  FreeModeScreenContextOptions,
+  FreeModeToolResult,
+  FreeModeVisionConfig,
+  FreeModeWatchDecision,
+  FreeModeWatchEventParams,
   HolidayRule,
   MemoryCard,
   MemoryChangedPayload,
@@ -24,6 +35,7 @@ import type {
   PiperStatus,
   PiperSynthesisResult,
   ProviderConnectionTestResult,
+  ScreenContextResult,
   StartWebBridgeResult,
   WebBridgeStateSnapshot,
   PromptBuildResult,
@@ -36,9 +48,11 @@ import type {
   TavernCharacter,
   TavernChatListItem,
   TavernChatSession,
+  TtsSettings,
   Worldbook,
   WorldbookMatch,
 } from '../types/tauri'
+import { defaultFreeModeEnhancementSettings, normalizeAppSettings } from '../stores/petStore'
 
 export const runningInTauri = () => isTauri()
 
@@ -176,6 +190,92 @@ export async function getActiveWindowContext() {
   return invoke<ActiveWindowContext>('get_active_window_context')
 }
 
+export async function captureScreenContext(
+  options: { mode?: 'screen' | 'active-window'; region?: string; regionLabel?: string; reason?: string } = {},
+) {
+  if (!runningInTauri()) {
+    return {
+      available: true,
+      message: '浏览器预览 mock：已读取当前页面标题。',
+      text: document.body?.innerText?.slice(0, 1200) || '',
+      imagePath: null,
+      imageHash: '',
+      title: document.title || 'Browser preview',
+      processName: 'browser',
+      capturedAt: String(Date.now()),
+      region: options.region || 'full',
+      regionLabel: options.regionLabel || '浏览器预览',
+    } satisfies ScreenContextResult
+  }
+  return invoke<ScreenContextResult>('capture_screen_text_command', { options })
+}
+
+export async function captureFreeModeContext(
+  options: FreeModeScreenContextOptions = {},
+  enhancementSettings: FreeModeEnhancementSettings = defaultFreeModeEnhancementSettings,
+) {
+  if (!runningInTauri()) {
+    const text = enhancementSettings.screen.ocrEnabled ? document.body?.innerText?.slice(0, 1200) || '' : ''
+    const screen = {
+      available: Boolean(text),
+      message: enhancementSettings.screen.ocrEnabled ? '浏览器预览 mock：已读取当前页面文字。' : '浏览器预览 mock：OCR 已关闭。',
+      text,
+      imagePath: null,
+      imageHash: '',
+      title: document.title || 'Browser preview',
+      processName: 'browser',
+      capturedAt: String(Date.now()),
+      region: options.region || enhancementSettings.screen.defaultRegion || 'full',
+      regionLabel: options.regionLabel || '浏览器预览',
+    } satisfies ScreenContextResult
+    return {
+      available: true,
+      message: 'Free Mode preview context captured.',
+      screen,
+      uiText: enhancementSettings.screen.uiReadEnabled ? `浏览器预览：${screen.title}` : '',
+      visionText: enhancementSettings.vision.enabled ? '浏览器预览未调用外部视觉服务。' : '',
+      toolText: '',
+      imageBase64Sent: false,
+    } satisfies FreeModeContextResult
+  }
+  return invoke<FreeModeContextResult>('capture_free_mode_context_command', { options, enhancementSettings })
+}
+
+export async function testFreeModeVision(config: FreeModeVisionConfig) {
+  if (!runningInTauri()) {
+    return {
+      available: false,
+      message: '浏览器预览不会调用外部视觉服务。',
+      text: '',
+    } satisfies FreeModeToolResult
+  }
+  return invoke<FreeModeToolResult>('test_free_mode_vision_command', { config })
+}
+
+export async function evaluateFreeModeWatchEvent(params: FreeModeWatchEventParams) {
+  if (!runningInTauri()) {
+    const visualContext = params.visualContext || ''
+    const shouldRespond = /error|failed|失败|报错|变化|更新|新内容|搜索|结果|警告/i.test(visualContext)
+    return {
+      shouldRespond,
+      reason: shouldRespond ? '浏览器预览 mock：观察到可能值得回应的变化。' : '浏览器预览 mock：变化不足以打扰。',
+      prompt: shouldRespond ? '你刚刚注意到屏幕发生了变化，请自然地小声提醒我。' : '',
+    } satisfies FreeModeWatchDecision
+  }
+  return invoke<FreeModeWatchDecision>('evaluate_free_mode_watch_event_command', { params })
+}
+
+export async function callFreeModeHttpTool(toolConfig: FreeModeHttpToolConfig, payload: unknown) {
+  if (!runningInTauri()) {
+    return {
+      available: false,
+      message: '浏览器预览不会调用外部 HTTP 工具。',
+      text: '',
+    } satisfies FreeModeToolResult
+  }
+  return invoke<FreeModeToolResult>('call_free_mode_http_tool_command', { toolConfig, payload })
+}
+
 export async function openBrowserSearch(query: string) {
   if (!runningInTauri()) {
     window.open(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer')
@@ -244,32 +344,33 @@ export async function hasApiKey() {
 
 export async function getSettings() {
   if (!runningInTauri()) {
-    return {
+    return normalizeAppSettings({
       model: 'deepseek-v4-flash',
       scale: 1,
       alwaysOnTop: true,
       replyLimit: 100,
-    } satisfies AppSettings
+    } satisfies Partial<AppSettings>)
   }
-  return invoke<AppSettings>('get_settings')
+  return invoke<AppSettings>('get_settings').then(normalizeAppSettings)
 }
 
 export async function updateSettings(settings: AppSettings) {
+  const normalized = normalizeAppSettings(settings)
   if (!runningInTauri()) {
-    emitMockSettingsChanged(settings)
-    return settings
+    emitMockSettingsChanged(normalized)
+    return normalized
   }
-  return invoke<AppSettings>('update_settings', { settings })
+  return invoke<AppSettings>('update_settings', { settings: normalized }).then(normalizeAppSettings)
 }
 
 export async function setPetScale(scale: number) {
   if (!runningInTauri()) {
-    const settings = {
+    const settings = normalizeAppSettings({
       model: 'deepseek-v4-flash',
       scale,
       alwaysOnTop: true,
       replyLimit: 100,
-    } satisfies AppSettings
+    } satisfies Partial<AppSettings>)
     emitMockSettingsChanged(settings)
     return scale
   }
@@ -365,6 +466,24 @@ export async function pickStageAudioFile() {
   return invoke<string>('import_stage_asset', { path: selected, kind: 'audio' })
 }
 
+export async function pickLocalDirectory() {
+  if (!runningInTauri()) return null
+  const selected = await open({
+    directory: true,
+    multiple: false,
+  })
+  return typeof selected === 'string' ? selected : null
+}
+
+export async function pickLocalFile(filters?: Array<{ name: string; extensions: string[] }>) {
+  if (!runningInTauri()) return null
+  const selected = await open({
+    multiple: false,
+    filters,
+  })
+  return typeof selected === 'string' ? selected : null
+}
+
 export async function setAlwaysOnTop(enabled: boolean) {
   if (!runningInTauri()) return enabled
   return invoke<boolean>('set_always_on_top', { enabled })
@@ -412,6 +531,29 @@ export async function getPiperStatus() {
 export async function synthesizePiper(text: string, rate: number) {
   if (!runningInTauri()) return null
   const result = await invoke<PiperSynthesisResult>('synthesize_piper_command', { text, rate })
+  return convertFileSrc(result.wavPath)
+}
+
+export async function getGenieStatus(config: GenieConfig) {
+  if (!runningInTauri()) {
+    return {
+      available: false,
+      message: '浏览器预览不检测本地 Genie。',
+      serverUrl: config.serverUrl,
+      workPath: config.workPath,
+      characterName: config.characterName,
+    } satisfies GenieStatus
+  }
+  return invoke<GenieStatus>('genie_status', { config })
+}
+
+export async function synthesizeGenie(text: string, settings: TtsSettings) {
+  if (!runningInTauri()) return null
+  const result = await invoke<GenieSynthesisResult>('synthesize_genie_command', {
+    text,
+    rate: settings.rate,
+    config: settings.genie,
+  })
   return convertFileSrc(result.wavPath)
 }
 
@@ -1045,6 +1187,64 @@ function mockStoryModeReply(message: string, characterId?: string) {
   })
 }
 
+function extractMockFreeModeUserInput(message: string) {
+  return message.match(/\u7528\u6237\u8f93\u5165\uff1a\s*([\s\S]*)$/)?.[1]?.trim() || message
+}
+
+function mockFreeModeReply(message: string, characterId?: string) {
+  message = extractMockFreeModeUserInput(message)
+  const character = mockCharacters.find((item) => item.id === characterId) ?? mockCharacters[0]
+  const config = character.freeModeStage ?? {
+    enabled: false,
+    defaultPoseId: null,
+    poses: [],
+    cgs: [],
+  }
+  const poses = config.poses
+  const defaultPoseId = config.defaultPoseId || poses[0]?.id || ''
+  const happyPoseId = poses.find((pose) => pose.id === 'happy')?.id || defaultPoseId
+  const surprisedPoseId = poses.find((pose) => pose.id === 'surprised')?.id || defaultPoseId
+  const previewMessage = (message || '继续自由模式演出').trim().replace(/[。！？??.,，、；;：:]+$/u, '')
+
+  return JSON.stringify({
+    frames: [
+      {
+        speaker: character.name,
+        poseId: defaultPoseId,
+        effect: 'soft-pop',
+        action: 'nod',
+        cues: [
+          { text: `收到：${previewMessage}。`, poseId: defaultPoseId, effect: 'soft-pop', action: 'nod' },
+          { text: '我先靠近一点。', poseId: surprisedPoseId, effect: 'soft-pop', action: 'lean-forward' },
+        ],
+      },
+      {
+        speaker: character.name,
+        poseId: happyPoseId,
+        effect: 'blush',
+        action: 'lean-forward',
+        cues: [
+          { text: '然后换个表情。', poseId: happyPoseId, effect: 'blush', action: 'lean-forward' },
+          { text: '像视频里那样连着说几句。', poseId: happyPoseId, effect: 'none', action: 'nod' },
+        ],
+      },
+      {
+        speaker: character.name,
+        poseId: surprisedPoseId,
+        effect: 'shake',
+        action: 'shake',
+        cues: [
+          { text: '下一句还可以继续切姿势。', poseId: surprisedPoseId, effect: 'shake', action: 'shake' },
+        ],
+        choices: [
+          { label: '靠近一点', prompt: '我靠近一点，想看看你接下来会怎么反应。' },
+          { label: '询问屏幕', prompt: '你刚才看到了屏幕上的什么？' },
+        ],
+      },
+    ],
+  })
+}
+
 async function mockStream(message = '', options: SendMessageOptions = {}) {
   cancelMockStream()
   const controller = new AbortController()
@@ -1065,23 +1265,36 @@ async function mockStream(message = '', options: SendMessageOptions = {}) {
       { once: true },
     )
   })
-  if (mockStreamAbortController === controller) {
-    mockStreamAbortController = null
+  if (cancelled) {
+    if (mockStreamAbortController === controller) {
+      mockStreamAbortController = null
+    }
+    if (mockStreamCurrent?.requestId === options.requestId) {
+      mockStreamCurrent = null
+    }
+    return undefined
   }
-  if (mockStreamCurrent?.requestId === options.requestId) {
-    mockStreamCurrent = null
-  }
-  if (cancelled) return undefined
   const eventScope = options.eventScope || 'chat'
   const reply =
     eventScope === 'story-mode'
       ? mockStoryModeReply(message, options.characterId)
+      : eventScope === 'free-mode'
+        ? mockFreeModeReply(message, options.characterId)
       : 'Preview reply. In the Tauri build this will use the configured model stream.'
-  if (eventScope === 'story-mode') {
-    emitMockChatChunk({ content: reply, eventScope, requestId: options.requestId })
+  if (eventScope === 'story-mode' || eventScope === 'free-mode') {
+    if (eventScope === 'free-mode') {
+      const chunks = splitMockFreeModeReply(reply)
+      for (const chunk of chunks) {
+        if (mockStreamAbortController !== controller) return undefined
+        emitMockChatChunk({ content: chunk, eventScope, requestId: options.requestId })
+        await new Promise((resolve) => window.setTimeout(resolve, 90))
+      }
+    } else {
+      emitMockChatChunk({ content: reply, eventScope, requestId: options.requestId })
+    }
     emitMockChatDone({
       content: reply,
-      chatId: options.chatId || 'mock-story-chat',
+      chatId: options.chatId || (eventScope === 'free-mode' ? 'mock-free-mode-chat' : 'mock-story-chat'),
       assistantCreatedAt: String(Date.now()),
       cancelled: false,
       eventScope,
@@ -1091,7 +1304,63 @@ async function mockStream(message = '', options: SendMessageOptions = {}) {
       totalTokens: 500,
     })
   }
+  if (mockStreamAbortController === controller) {
+    mockStreamAbortController = null
+  }
+  if (mockStreamCurrent?.requestId === options.requestId) {
+    mockStreamCurrent = null
+  }
   return reply
+}
+
+function splitMockFreeModeReply(reply: string) {
+  const chunks: string[] = []
+  const framesStart = reply.indexOf('"frames"')
+  const arrayStart = framesStart >= 0 ? reply.indexOf('[', framesStart) : -1
+  if (arrayStart < 0) {
+    for (let index = 0; index < reply.length; index += 24) {
+      chunks.push(reply.slice(index, index + 24))
+    }
+    return chunks
+  }
+
+  let cursor = 0
+  let objectStart = -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let index = arrayStart + 1; index < reply.length; index += 1) {
+    const char = reply[index]
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (char === '"') {
+      inString = true
+    } else if (char === '{') {
+      if (depth === 0) objectStart = index
+      depth += 1
+    } else if (char === '}') {
+      if (depth > 0) depth -= 1
+      if (depth === 0 && objectStart >= 0) {
+        const end = index + 1
+        if (objectStart > cursor) chunks.push(reply.slice(cursor, objectStart))
+        chunks.push(reply.slice(objectStart, end))
+        cursor = end
+        objectStart = -1
+      }
+    }
+  }
+  if (cursor < reply.length) chunks.push(reply.slice(cursor))
+  return chunks.filter(Boolean)
 }
 
 
@@ -1324,8 +1593,19 @@ function baseNameFromPath(path: string, fallback: string) {
   return fileName || fallback
 }
 
+function normalizeMockVoiceProfile(character: TavernCharacter): NonNullable<TavernCharacter['voiceProfile']> {
+  return {
+    ...(character.voiceProfile ?? {}),
+    freeModeGeniePresetId: character.voiceProfile?.freeModeGeniePresetId || null,
+  }
+}
+
 function mockSaveCharacter(character: TavernCharacter) {
   const now = String(Date.now())
+  const freeModeStage =
+    character.id === 'builtin-character-kaelenyssa-arumorael' && !character.freeModeStage?.poses?.length
+      ? mockKaelenyssaFreeModeStage()
+      : character.freeModeStage
   const saved: TavernCharacter = {
     ...character,
     id: character.id.trim() || mockId('mock-character', character.name),
@@ -1347,6 +1627,13 @@ function mockSaveCharacter(character: TavernCharacter) {
       defaultExpressionId: character.stageConfig?.defaultExpressionId || null,
       outputFormat: character.stageConfig?.outputFormat || 'multiFrameJson',
     },
+    freeModeStage: {
+      enabled: Boolean(freeModeStage?.enabled),
+      defaultPoseId: freeModeStage?.defaultPoseId || null,
+      poses: freeModeStage?.poses || [],
+      cgs: freeModeStage?.cgs || [],
+    },
+    voiceProfile: normalizeMockVoiceProfile(character),
     createdAt: character.createdAt || now,
     updatedAt: now,
   }
@@ -1825,6 +2112,30 @@ function mockImportChat(path: string) {
 
 function cloneMock<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
+}
+
+type MockFreeModeStageConfig = NonNullable<TavernCharacter['freeModeStage']>
+type MockFreeModePose = MockFreeModeStageConfig['poses'][number]
+
+function mockFreeModePose(id: string, name: string, image: string, prompt: string): MockFreeModePose {
+  return { id, name, image, prompt }
+}
+
+function mockKaelenyssaFreeModeStage(): MockFreeModeStageConfig {
+  return {
+    enabled: true,
+    defaultPoseId: 'neutral',
+    cgs: [],
+    poses: [
+      mockFreeModePose('neutral', '平静', '/assets/builtin-cards/kaelenyssa-arumorael-neutral-transparent.png', '平静'),
+      mockFreeModePose('happy', '开心', '/assets/builtin-cards/kaelenyssa-arumorael-happy-transparent.png', '眉眼弯弯、露齿笑或抿嘴笑、脸颊泛红，抬手比耶或前倾'),
+      mockFreeModePose('angry', '生气', '/assets/builtin-cards/kaelenyssa-arumorael-angry-transparent.png', '倒八字眉、眉头紧锁、脸红，握拳或叉腰'),
+      mockFreeModePose('sad', '难过', '/assets/builtin-cards/kaelenyssa-arumorael-sad-transparent.png', '八字眉、泪眼汪汪、嘴角下撇，低头垂肩'),
+      mockFreeModePose('surprised', '惊讶', '/assets/builtin-cards/kaelenyssa-arumorael-surprised-transparent.png', '眼睛瞪大、嘴巴成 O 形，抬手捂嘴或身体后仰'),
+      mockFreeModePose('shy', '害羞', '/assets/builtin-cards/kaelenyssa-arumorael-shy-transparent.png', '脸颊大面积泛红、眼神躲闪，侧身或双手背后'),
+      mockFreeModePose('indifferent', '冷漠', '/assets/builtin-cards/kaelenyssa-arumorael-indifferent-transparent.png', '眉眼平直、半眯眼、嘴角平直，抱臂或看向一侧'),
+    ],
+  }
 }
 
 const mockBuiltinPresets: PromptPreset[] = [
@@ -2552,6 +2863,10 @@ const mockBuiltinCharacters: TavernCharacter[] = [
     defaultProviderId: 'deepseek',
     useCustomRelationshipPrompts: false,
     relationshipStagePrompts: defaultRelationshipStagePrompts,
+    voiceProfile: {
+      freeModeGeniePresetId: 'elysia',
+    },
+    freeModeStage: mockKaelenyssaFreeModeStage(),
     createdAt: '0',
     updatedAt: '0',
   },
@@ -3849,6 +4164,11 @@ function mockInstallBuiltinAssets(ids: string[]): BuiltinInstallResult {
 }
 
 const mockCharacters: TavernCharacter[] = [
+  {
+    ...cloneMock(mockBuiltinCharacters.find((character) => character.id === 'builtin-character-kaelenyssa-arumorael')!),
+    createdAt: '0',
+    updatedAt: '0',
+  },
   {
     id: 'jingling',
     name: '鲸灵',

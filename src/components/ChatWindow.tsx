@@ -1,11 +1,13 @@
 import { BookOpen, Heart, Minus, Volume2, VolumeX, Waves } from 'lucide-react'
 import { ChatPanel } from './ChatPanel'
+import { stopSpeech } from '../lib/speech'
 import { hideCurrentWindow, showTavernWindow, startWindowDrag } from '../lib/tauri'
 import { formatLocalDateTime } from '../lib/time'
 import { usePetStore } from '../stores/petStore'
 import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { CharacterRelationship } from '../types/tauri'
+import { GenieVoiceSelect } from './GenieVoiceSelect'
 
 function isInteractiveTarget(target: EventTarget | null) {
   const element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null
@@ -60,6 +62,13 @@ export function ChatWindow() {
   const setTtsSettings = usePetStore((state) => state.setTtsSettings)
   const VoiceIcon = ttsSettings.enabled ? Volume2 : VolumeX
 
+  function toggleTts() {
+    if (ttsSettings.enabled) {
+      stopSpeech()
+    }
+    setTtsSettings({ ...ttsSettings, enabled: !ttsSettings.enabled })
+  }
+
   return (
     <section className="chat-window">
       <div
@@ -91,12 +100,13 @@ export function ChatWindow() {
           >
             <button
               className={`icon-button voice-button ${ttsSettings.enabled ? 'voice-button--on' : ''}`}
-              title={ttsSettings.enabled ? '关闭语音播报' : '开启语音播报'}
+              title={ttsSettings.enabled ? '关闭引号对白朗读' : '开启引号对白朗读'}
               type="button"
-              onClick={() => setTtsSettings({ ...ttsSettings, enabled: !ttsSettings.enabled })}
+              onClick={toggleTts}
             >
               <VoiceIcon size={15} />
             </button>
+            <GenieVoiceSelect settings={ttsSettings} onChange={setTtsSettings} compact />
             <button className="icon-button" title="打开酒馆" type="button" onClick={() => void showTavernWindow()}>
               <BookOpen size={15} />
             </button>

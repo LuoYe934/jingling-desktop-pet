@@ -29,6 +29,8 @@ keyring = "3"
 tokio = { version = "1", features = ["sync", "macros", "rt", "time", "net", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tauri-plugin-dialog = "2.7.1"
+base64 = "0.22"
+sha2 = "0.10"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 tauri = { version = "2.11.0", features = ["tray-icon", "protocol-asset"] }

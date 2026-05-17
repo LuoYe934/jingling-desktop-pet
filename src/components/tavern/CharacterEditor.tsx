@@ -1,8 +1,10 @@
 import { Download, FileAudio, FileUp, Heart, ImagePlus, Plus, Save, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { genieVoicePresets } from '../../lib/genieVoicePresets'
 import { pickAvatarFile, pickStageAudioFile, pickStageImageFile } from '../../lib/tauri'
 import { defaultRelationshipStagePrompts, relationshipStageLabels } from '../../types/tauri'
 import type {
+  CharacterFreeModeStageConfig,
   CharacterRelationship,
   CharacterStageConfig,
   PromptPreset,
@@ -36,6 +38,15 @@ function emptyStageConfig(): CharacterStageConfig {
   }
 }
 
+function emptyFreeModeStageConfig(): CharacterFreeModeStageConfig {
+  return {
+    enabled: false,
+    defaultPoseId: null,
+    poses: [],
+    cgs: [],
+  }
+}
+
 function emptyCharacter(): TavernCharacter {
   return {
     id: '',
@@ -45,14 +56,19 @@ function emptyCharacter(): TavernCharacter {
     description: '',
     personality: '',
     scenario: '',
+    freeModeInstructions: '',
     firstMes: '',
     mesExample: '',
     tags: [],
     defaultPresetId: 'healing-short-chat',
     defaultProviderId: 'deepseek',
+    voiceProfile: {
+      freeModeGeniePresetId: null,
+    },
     useCustomRelationshipPrompts: false,
     relationshipStagePrompts: defaultRelationshipStagePrompts,
     stageConfig: emptyStageConfig(),
+    freeModeStage: emptyFreeModeStageConfig(),
     createdAt: '',
     updatedAt: '',
   }
@@ -61,10 +77,14 @@ function emptyCharacter(): TavernCharacter {
 function normalizeCharacterDraft(character: TavernCharacter): TavernCharacter {
   return {
     ...character,
+    freeModeInstructions: character.freeModeInstructions || '',
     useCustomRelationshipPrompts: Boolean(character.useCustomRelationshipPrompts),
     relationshipStagePrompts: {
       ...defaultRelationshipStagePrompts,
       ...character.relationshipStagePrompts,
+    },
+    voiceProfile: {
+      freeModeGeniePresetId: character.voiceProfile?.freeModeGeniePresetId || null,
     },
     stageConfig: {
       ...emptyStageConfig(),
@@ -74,6 +94,12 @@ function normalizeCharacterDraft(character: TavernCharacter): TavernCharacter {
       scenes: character.stageConfig?.scenes || [],
       bgms: character.stageConfig?.bgms || [],
       outputFormat: character.stageConfig?.outputFormat || 'multiFrameJson',
+    },
+    freeModeStage: {
+      ...emptyFreeModeStageConfig(),
+      ...character.freeModeStage,
+      poses: character.freeModeStage?.poses || [],
+      cgs: character.freeModeStage?.cgs || [],
     },
   }
 }
@@ -164,6 +190,18 @@ export function CharacterEditor({ characters, presets, providers, relationships,
     }))
   }
 
+  function updateFreeModeStageConfig(updater: (config: CharacterFreeModeStageConfig) => CharacterFreeModeStageConfig) {
+    setDraft((current) => ({
+      ...current,
+      freeModeStage: updater({
+        ...emptyFreeModeStageConfig(),
+        ...current.freeModeStage,
+        poses: current.freeModeStage?.poses || [],
+        cgs: current.freeModeStage?.cgs || [],
+      }),
+    }))
+  }
+
   function addStageItem(kind: 'sprites' | 'expressions' | 'scenes' | 'bgms') {
     const id = `${kind.slice(0, -1)}-${Date.now()}`
     updateStageConfig((config) => {
@@ -195,6 +233,26 @@ export function CharacterEditor({ characters, presets, providers, relationships,
     })
   }
 
+  function addFreeModePose() {
+    const id = `free-pose-${Date.now()}`
+    updateFreeModeStageConfig((config) => ({
+      ...config,
+      poses: [...config.poses, { id, name: '新姿势', image: '', prompt: '' }],
+      defaultPoseId: config.defaultPoseId || id,
+    }))
+  }
+
+  function removeFreeModePose(id: string) {
+    updateFreeModeStageConfig((config) => {
+      const poses = config.poses.filter((item) => item.id !== id)
+      return {
+        ...config,
+        poses,
+        defaultPoseId: config.defaultPoseId === id ? poses[0]?.id || null : config.defaultPoseId,
+      }
+    })
+  }
+
   function removeStageItem(kind: 'sprites' | 'expressions' | 'scenes' | 'bgms', id: string) {
     updateStageConfig((config) => {
       if (kind === 'sprites') return { ...config, sprites: config.sprites.filter((item) => item.id !== id) }
@@ -214,6 +272,15 @@ export function CharacterEditor({ characters, presets, providers, relationships,
       }
       return { ...config, bgms: config.bgms.filter((item) => item.id !== id) }
     })
+  }
+
+  async function uploadFreeModePoseImage(id: string) {
+    const path = await pickStageImageFile()
+    if (!path) return
+    updateFreeModeStageConfig((config) => ({
+      ...config,
+      poses: config.poses.map((item) => (item.id === id ? { ...item, image: path } : item)),
+    }))
   }
 
   async function uploadStageImage(kind: 'sprite' | 'scene', id: string) {
@@ -253,10 +320,20 @@ export function CharacterEditor({ characters, presets, providers, relationships,
         .split(',')
         .map((tag) => tag.trim())
         .filter(Boolean),
+      freeModeInstructions: nextDraft.freeModeInstructions || '',
+      voiceProfile: {
+        freeModeGeniePresetId: nextDraft.voiceProfile?.freeModeGeniePresetId || null,
+      },
       stageConfig: {
         ...emptyStageConfig(),
         ...nextDraft.stageConfig,
         outputFormat: 'multiFrameJson',
+      },
+      freeModeStage: {
+        ...emptyFreeModeStageConfig(),
+        ...nextDraft.freeModeStage,
+        poses: nextDraft.freeModeStage?.poses || [],
+        cgs: nextDraft.freeModeStage?.cgs || [],
       },
     }
   }
@@ -371,6 +448,25 @@ export function CharacterEditor({ characters, presets, providers, relationships,
             </select>
           </label>
           <label>
+            自由模式 Genie 声音
+            <select
+              value={draft.voiceProfile?.freeModeGeniePresetId || ''}
+              onChange={(event) =>
+                update('voiceProfile', {
+                  ...draft.voiceProfile,
+                  freeModeGeniePresetId: event.target.value || null,
+                })
+              }
+            >
+              <option value="">不绑定</option>
+              {genieVoicePresets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label} / {preset.description}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
             标签
             <input value={tagsText} onChange={(event) => setTagsText(event.target.value)} />
           </label>
@@ -408,6 +504,10 @@ export function CharacterEditor({ characters, presets, providers, relationships,
           <textarea value={draft.scenario} onChange={(event) => update('scenario', event.target.value)} />
         </label>
         <label>
+          自由模式硬性要求
+          <textarea value={draft.freeModeInstructions || ''} onChange={(event) => update('freeModeInstructions', event.target.value)} />
+        </label>
+        <label>
           开场白
           <textarea value={draft.firstMes} onChange={(event) => update('firstMes', event.target.value)} />
         </label>
@@ -441,21 +541,134 @@ export function CharacterEditor({ characters, presets, providers, relationships,
         </section>
 
         {qaEnabled && (
-          <section className="stage-config-editor">
-            <div className="stage-config-editor__head">
-              <div>
-                <strong>演出配置 QA</strong>
-                <span>剧情模式读取这些资源 ID 来切换立绘、表情、背景和 BGM。</span>
+          <>
+            <section className="stage-config-editor">
+              <div className="stage-config-editor__head">
+                <div>
+                  <strong>自由模式姿势 QA</strong>
+                  <span>自由模式专属立绘和姿势提示词，不影响剧情模式演出配置。</span>
+                </div>
+                <label className="checkbox-line">
+                  <input
+                    type="checkbox"
+                    checked={draft.freeModeStage?.enabled || false}
+                    onChange={(event) =>
+                      updateFreeModeStageConfig((config) => ({ ...config, enabled: event.target.checked }))
+                    }
+                  />
+                  启用自由模式姿势
+                </label>
               </div>
-              <label className="checkbox-line">
-                <input
-                  type="checkbox"
-                  checked={draft.stageConfig?.enabled || false}
-                  onChange={(event) => updateStageConfig((config) => ({ ...config, enabled: event.target.checked }))}
-                />
-                启用演出配置
-              </label>
-            </div>
+
+              <div className="tavern-form-grid">
+                <label>
+                  默认姿势
+                  <select
+                    value={draft.freeModeStage?.defaultPoseId || ''}
+                    onChange={(event) =>
+                      updateFreeModeStageConfig((config) => ({ ...config, defaultPoseId: event.target.value || null }))
+                    }
+                  >
+                    <option value="">自动</option>
+                    {(draft.freeModeStage?.poses || []).map((pose) => (
+                      <option key={pose.id} value={pose.id}>
+                        {pose.name || pose.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="stage-resource-group">
+                <div className="stage-resource-group__head">
+                  <strong>姿势</strong>
+                  <button className="secondary-button" type="button" onClick={addFreeModePose}>
+                    <Plus size={15} />
+                    新增姿势
+                  </button>
+                </div>
+                {(draft.freeModeStage?.poses || []).map((pose, index) => (
+                  <div className="stage-resource-row" key={`${pose.id}-${index}`}>
+                    <label>
+                      ID
+                      <input
+                        value={pose.id}
+                        onChange={(event) =>
+                          updateFreeModeStageConfig((config) => ({
+                            ...config,
+                            poses: replaceByIndex(config.poses, index, (item) => ({ ...item, id: event.target.value })),
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      名称
+                      <input
+                        value={pose.name}
+                        onChange={(event) =>
+                          updateFreeModeStageConfig((config) => ({
+                            ...config,
+                            poses: replaceByIndex(config.poses, index, (item) => ({ ...item, name: event.target.value })),
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="stage-path-field">
+                      立绘路径
+                      <input
+                        value={pose.image}
+                        onChange={(event) =>
+                          updateFreeModeStageConfig((config) => ({
+                            ...config,
+                            poses: replaceByIndex(config.poses, index, (item) => ({ ...item, image: event.target.value })),
+                          }))
+                        }
+                      />
+                    </label>
+                    <button className="secondary-button" type="button" onClick={() => void uploadFreeModePoseImage(pose.id)}>
+                      <ImagePlus size={15} />
+                      上传
+                    </button>
+                    <button
+                      className="icon-button danger-button"
+                      type="button"
+                      title="删除姿势"
+                      onClick={() => removeFreeModePose(pose.id)}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                    <label className="stage-row-wide">
+                      提示词
+                      <input
+                        value={pose.prompt}
+                        onChange={(event) =>
+                          updateFreeModeStageConfig((config) => ({
+                            ...config,
+                            poses: replaceByIndex(config.poses, index, (item) => ({ ...item, prompt: event.target.value })),
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="stage-config-editor">
+              <div className="stage-config-editor__head">
+                <div>
+                  <strong>演出配置 QA</strong>
+                  <span>剧情模式读取这些资源 ID 来切换立绘、表情、背景和 BGM。</span>
+                </div>
+                <label className="checkbox-line">
+                  <input
+                    type="checkbox"
+                    checked={draft.stageConfig?.enabled || false}
+                    onChange={(event) => updateStageConfig((config) => ({ ...config, enabled: event.target.checked }))}
+                  />
+                  启用演出配置
+                </label>
+              </div>
 
             <div className="tavern-form-grid">
               <label>
@@ -767,6 +980,7 @@ export function CharacterEditor({ characters, presets, providers, relationships,
               ))}
             </div>
           </section>
+          </>
         )}
 
         <div className="tavern-actions">
